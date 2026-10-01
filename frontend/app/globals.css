@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { height: 100%; }
+body { @apply bg-bench text-ink font-sans antialiased; font-variant-numeric: tabular-nums; }
+
+:focus-visible { outline: 2px solid #16233A; outline-offset: 2px; }
+button { @apply cursor-pointer; }
+button:disabled { @apply cursor-not-allowed opacity-50; }
+
+.reading { @apply font-reading text-[1.05rem] leading-relaxed; }
+.reading p { @apply mb-2; }
+.reading table { @apply border-collapse my-2; }
+.reading th, .reading td { @apply border border-rule px-2 py-1 text-sm; }
+.reading ul { @apply list-disc pl-5; }
+
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-[4px] border border-ink bg-ink px-3 py-1.5 text-sm font-medium text-white hover:bg-[#22345a]; }
+.btn-quiet { @apply inline-flex items-center justify-center gap-2 rounded-[4px] border border-rule bg-transparent px-3 py-1.5 text-sm text-ink hover:border-ink; }
+.field { @apply rounded-[4px] border border-rule bg-white px-2.5 py-1.5 text-sm; }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

@@ -1,0 +1,8 @@
+# Real inference (GPU workstation). Install torch AND torchvision first with the right CUDA wheel:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# (torchvision is required: transformers' Qwen2.5-VL processor builds a video processor that imports it)
+transformers>=4.51.3,<5
+accelerate>=0.30
+bitsandbytes>=0.43
+safetensors>=0.4
+huggingface_hub>=0.23

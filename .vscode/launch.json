@@ -1,0 +1,9 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    { "name": "Backend (debug)", "type": "debugpy", "request": "launch", "module": "uvicorn",
+      "args": ["app.main:app", "--port", "8000"], "cwd": "${workspaceFolder}/backend", "justMyCode": true },
+    { "name": "Eval CLI (sample)", "type": "debugpy", "request": "launch", "program": "${workspaceFolder}/backend/scripts/eval_docvqa.py",
+      "args": ["--dataset", "sample/sample.jsonl", "--name", "vscode-run"], "cwd": "${workspaceFolder}/backend" }
+  ]
+}

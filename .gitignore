@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+# node
+node_modules/
+.next/
+frontend/.env.local
+# local state
+.env
+backend/.env
+data/docmind.sqlite3*
+data/uploads/*
+!data/uploads/.gitkeep
+logs/

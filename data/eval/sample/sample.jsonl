@@ -1,0 +1,7 @@
+{"qid": "s1", "question": "What is the invoice number?", "answers": ["INV-2041"], "image": "images/invoice.png"}
+{"qid": "s2", "question": "What is the total due?", "answers": ["$1,284.50"], "image": "images/invoice.png"}
+{"qid": "s3", "question": "Who is the invoice billed to?", "answers": ["Northwind Traders"], "image": "images/invoice.png"}
+{"qid": "s4", "question": "Who is the memo addressed to?", "answers": ["Priya Sharma"], "image": "images/memo.png"}
+{"qid": "s5", "question": "Which room is the meeting in?", "answers": ["Room B12"], "image": "images/memo.png"}
+{"qid": "s6", "question": "What was the revenue in Q2?", "answers": ["48.2"], "image": "images/table.png"}
+{"qid": "s7", "question": "How many units were sold in Q3?", "answers": ["1490"], "image": "images/table.png"}
