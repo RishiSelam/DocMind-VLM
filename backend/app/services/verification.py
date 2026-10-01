@@ -118,6 +118,14 @@ def reference_support(answer: Optional[str], reference: str) -> Optional[float]:
     return round(sum(t.lstrip("$") in vocab for t in toks) / len(toks), 3)
 
 
+def missing_from_reference(answer: Optional[str], reference: str) -> List[str]:
+    """The answer's content tokens that are not printed in `reference` (same matching as reference_support)."""
+    if answer is None or is_not_found(answer):
+        return []
+    vocab = {t.lstrip("$") for t in tokens(reference)}
+    return [t for t in dict.fromkeys(_content_tokens(answer)) if t.lstrip("$") not in vocab]
+
+
 def scorecard(vlm: Optional[Dict[str, Any]], ocr: Optional[Dict[str, Any]], reference: Optional[str],
               ocr_read_accuracy: Optional[float], n_pages: int, margin: float = 0.1) -> Dict[str, Any]:
     """Side-by-side numbers for the two pipelines on one question, plus a cautious verdict.
@@ -132,7 +140,8 @@ def scorecard(vlm: Optional[Dict[str, Any]], ocr: Optional[Dict[str, Any]], refe
         ok = p.get("answer") is not None and not p.get("error")
         answered = ok and not is_not_found(p["answer"])
         return {"answered": answered, "error": bool(p.get("error")), "ms": p.get("ms"), "pages_read": len(p.get("pages") or []),
-                "support": reference_support(p["answer"], reference) if (answered and reference) else None}
+                "support": reference_support(p["answer"], reference) if (answered and reference) else None,
+                "missing": missing_from_reference(p["answer"], reference) if (answered and reference) else []}
 
     sv, so = side(vlm), side(ocr)
     faster = None

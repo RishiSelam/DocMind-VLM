@@ -32,8 +32,11 @@ export const api = {
   conversations: () => req<Conversation[]>("/api/conversations"),
   conversation: (id: string) => req<Conversation & { messages: Message[] }>(`/api/conversations/${id}`),
   deleteConversation: (id: string) => req(`/api/conversations/${id}`, { method: "DELETE" }),
+  cropUrl: (docId: string, page: number, b: number[], dpi = 200) =>
+    `${API}/api/documents/${docId}/pages/${page}/crop?x0=${b[0]}&y0=${b[1]}&x1=${b[2]}&y1=${b[3]}&dpi=${dpi}`,
+  historyUrl: (docId: string, format: "md" | "json" = "md") => `${API}/api/documents/${docId}/history?format=${format}`,
   exportUrl: (id: string, format: "md" | "json") => `${API}/api/conversations/${id}/export?format=${format}`,
-  ask: (b: { doc_id?: string; conversation_id?: string; question: string; mode?: string; short?: boolean }) =>
+  ask: (b: { doc_id?: string; conversation_id?: string; question: string; mode?: string; short?: boolean; reuse?: boolean }) =>
     req<{ conversation_id: string; user_message: Message; assistant_message: Message & { payload: AskPayload } }>("/api/ask", json(b)),
   datasets: () => req<Dataset[]>("/api/eval/datasets"),
   experiments: () => req<Experiment[]>("/api/experiments"),

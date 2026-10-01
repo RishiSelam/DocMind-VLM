@@ -55,13 +55,13 @@ export default function PageViewer({ docId, page, nPages, research, onClose, onP
         <div className="grid min-h-0 flex-1 gap-4 overflow-auto p-3 md:grid-cols-2">
           <div className="relative self-start">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={api.pageImageUrl(docId, page, dpi)} alt={`Page ${page}`} className="block w-full border border-rule bg-white"
+            <img src={api.pageImageUrl(docId, page, dpi)} alt={`Page ${page}`} className="block w-full border border-rule bg-paper"
               onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />
             {showOcr && ocr && size && (
               <svg viewBox={`0 0 ${size.w} ${size.h}`} className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden>
                 {ocr.boxes.map((b, i) => (
                   <rect key={i} x={b.x0} y={b.y0} width={b.x1 - b.x0} height={b.y1 - b.y0} fill="none" strokeWidth={Math.max(size.w / 500, 1.5)}
-                    stroke={b.score < 0.8 ? "#B42318" : "#A8580C"} />
+                    style={{ stroke: b.score < 0.8 ? "rgb(var(--bad))" : "rgb(var(--ocr))" }} />
                 ))}
               </svg>
             )}
@@ -77,7 +77,7 @@ export default function PageViewer({ docId, page, nPages, research, onClose, onP
                   <p className="mb-2 text-muted">{ocr.engine} · {ocr.boxes.length} lines · mean confidence {ocr.mean_conf == null ? "n/a" : (ocr.mean_conf * 100).toFixed(1) + "%"} · {Math.round(ocr.ms)} ms</p>
                   {ocr.audit.flags.length > 0 && <ul className="mb-2 list-disc pl-5 text-warn">{ocr.audit.flags.map((f) => <li key={f}>{f}</li>)}</ul>}
                   {ocr.audit.ocr_vs_layer_similarity != null && <p className="mb-2">Matches the PDF's own text layer at {(ocr.audit.ocr_vs_layer_similarity * 100).toFixed(1)}%; {ocr.audit.layer_tokens_missed_by_ocr} words missed.</p>}
-                  <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap border border-rule bg-white p-2 font-reading text-[0.95rem]">{ocr.text || "(OCR found no text on this page)"}</pre>
+                  <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap border border-rule bg-paper p-2 font-reading text-[0.95rem]">{ocr.text || "(OCR found no text on this page)"}</pre>
                 </>
               )}
             </div>

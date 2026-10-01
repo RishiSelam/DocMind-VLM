@@ -1,156 +1,149 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import AnswerPair from "@/components/AnswerPair";
-import { useMode } from "@/components/ModeContext";
-import PageStrip from "@/components/PageStrip";
-import PageViewer from "@/components/PageViewer";
-import Rail from "@/components/Rail";
-import { api } from "@/lib/api";
-import type { AskPayload, Conversation, Doc, Message, OcrStatus } from "@/lib/types";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
+import ConverterHero from "@/components/ConverterHero";
+import { api, pct } from "@/lib/api";
+import type { Experiment } from "@/lib/types";
 
-export default function Workbench() {
-  const { mode } = useMode();
-  const research = mode === "research";
-  const [docs, setDocs] = useState<Doc[]>([]);
-  const [convs, setConvs] = useState<Conversation[]>([]);
-  const [docId, setDocId] = useState<string | null>(null);
-  const [convId, setConvId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [question, setQuestion] = useState("");
-  const [askMode, setAskMode] = useState<"both" | "vlm" | "ocr">("both");
-  const [short, setShort] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [viewer, setViewer] = useState<number | null>(null);
-  const [ocr, setOcr] = useState<OcrStatus | null>(null);
-  const [railOpen, setRailOpen] = useState(false);
-  const feedEnd = useRef<HTMLDivElement>(null);
-
-  const doc = useMemo(() => docs.find((d) => d.id === docId) ?? null, [docs, docId]);
-  const shownConvs = useMemo(() => convs.filter((c) => !docId || c.doc_id === docId), [convs, docId]);
-
-  const refresh = useCallback(async () => {
-    try { const [d, c] = await Promise.all([api.documents(), api.conversations()]); setDocs(d); setConvs(c); }
-    catch (e: any) { setError(e.message); }
-  }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => { feedEnd.current?.scrollIntoView({ block: "end" }); }, [messages, busy]);
-
-  // OCR cache status for the selected document (research mode); polls while a job runs.
+/** Sections rise into view once, as they are scrolled to. */
+function Reveal({ children, className = "", delay = 0 }: { children: React.ReactNode; className?: string; delay?: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(false);
   useEffect(() => {
-    setOcr(null);
-    if (!docId || !research) return;
-    let alive = true, t: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try { const s = await api.ocrStatus(docId); if (!alive) return; setOcr(s); if (s.status === "running") t = setTimeout(poll, 2000); } catch {}
-    };
-    void poll();
-    return () => { alive = false; clearTimeout(t); };
-  }, [docId, research]);
+    const el = ref.current;
+    if (!el) return;
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting) { setShown(true); io.disconnect(); } }, { threshold: 0.15 });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return <div ref={ref} className={`reveal ${shown ? "shown" : ""} ${className}`} style={{ transitionDelay: `${delay}ms` }}>{children}</div>;
+}
 
-  const lastPayload = useMemo(() => [...messages].reverse().find((m) => m.role === "assistant")?.payload as Partial<AskPayload> | undefined, [messages]);
+function Icon({ kind }: { kind: "eye" | "text" | "seal" }) {
+  const p = { width: 28, height: 28, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true };
+  if (kind === "eye") return <svg {...p}><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z" /><circle cx="12" cy="12" r="2.8" /></svg>;
+  if (kind === "text") return <svg {...p}><path d="M4 7V5h16v2M12 5v14M9 19h6" /></svg>;
+  return <svg {...p}><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></svg>;
+}
 
-  async function upload(file: File) {
-    setUploading(true); setError(null);
-    try { const d = await api.upload(file); await refresh(); selectDoc(d.id); setRailOpen(false); }
-    catch (e: any) { setError(e.message); } finally { setUploading(false); }
-  }
-  function selectDoc(id: string) { setDocId(id); setConvId(null); setMessages([]); setError(null); setRailOpen(false); }
-  async function selectConv(c: Conversation) {
-    setError(null);
-    try { const full = await api.conversation(c.id); setDocId(c.doc_id); setConvId(c.id); setMessages(full.messages); setRailOpen(false); }
-    catch (e: any) { setError(e.message); }
-  }
-  async function deleteDoc(id: string) { try { await api.deleteDoc(id); if (id === docId) { setDocId(null); setConvId(null); setMessages([]); } await refresh(); } catch (e: any) { setError(e.message); } }
-  async function deleteConv(id: string) { try { await api.deleteConversation(id); if (id === convId) { setConvId(null); setMessages([]); } await refresh(); } catch (e: any) { setError(e.message); } }
-
-  async function ask() {
-    const q = question.trim();
-    if (!q || !docId || busy) return;
-    setBusy(true); setError(null); setQuestion("");
-    const optimistic: Message = { id: `tmp_${Date.now()}`, conversation_id: convId ?? "", role: "user", content: q, payload: {}, created_at: Date.now() / 1000 };
-    setMessages((m) => [...m, optimistic]);
-    try {
-      const r = await api.ask({ doc_id: docId, conversation_id: convId ?? undefined, question: q, mode: askMode, short });
-      setConvId(r.conversation_id);
-      setMessages((m) => [...m.filter((x) => x.id !== optimistic.id), r.user_message, r.assistant_message]);
-      void refresh();
-    } catch (e: any) {
-      setMessages((m) => m.filter((x) => x.id !== optimistic.id));
-      setQuestion(q);
-      setError(e.message);
-    } finally { setBusy(false); }
-  }
-
-  async function runOcr() { if (!docId) return; try { setOcr(await api.startOcr(docId)); const t = setInterval(async () => { const s = await api.ocrStatus(docId); setOcr(s); if (s.status !== "running") clearInterval(t); }, 2000); } catch (e: any) { setError(e.message); } }
+export default function Landing() {
+  const [exp, setExp] = useState<Experiment | null>(null);
+  useEffect(() => {
+    api.experiments().then((es) => setExp(es.find((e) => e.status === "finished" && e.metrics?.trust && !e.config.demo_mode) ?? null)).catch(() => {});
+  }, []);
+  const t = exp?.metrics.trust;
 
   return (
-    <div className="flex h-full flex-col md:flex-row">
-      <div className={`${railOpen ? "block" : "hidden"} h-full md:block`}>
-        <Rail docs={docs} docId={docId} onSelectDoc={selectDoc} onDeleteDoc={deleteDoc} onUpload={upload} uploading={uploading}
-          convs={shownConvs} convId={convId} onSelectConv={selectConv} onNewChat={() => { setConvId(null); setMessages([]); }} onDeleteConv={deleteConv} />
-      </div>
-      <main className={`${railOpen ? "hidden" : "flex"} min-h-0 min-w-0 flex-1 flex-col md:flex`}>
-        <button className="btn-quiet m-2 self-start md:hidden" onClick={() => setRailOpen(true)}>Documents</button>
-        {!doc ? (
-          <div className="m-auto max-w-md p-6">
-            <h1 className="font-reading text-2xl font-semibold">Ask a document, twice.</h1>
-            <p className="mt-2 text-muted">Upload a PDF or a page image. DocMind answers your question by reading the page image directly, and again by running OCR and handing the text to a language model, then shows you where the two answers differ.</p>
-            <p className="mt-2 text-sm text-muted">Upload with the panel on the left. A sample PDF is created by <code>python scripts/make_sample_data.py</code>.</p>
-            {error && <p role="alert" className="mt-3 rounded-[4px] bg-bad-soft p-2 text-sm text-bad">{error}</p>}
+    <div className="h-full overflow-y-auto">
+      {/* hero: always dark, like a product stage */}
+      <section className="dark relative overflow-hidden bg-bench text-ink">
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 top-0 mx-auto h-[520px] max-w-5xl rounded-full bg-vlm/10 blur-[120px]" />
+        <div className="relative mx-auto flex max-w-6xl flex-col items-center px-6 pb-16 pt-20 text-center sm:pt-28">
+          <p className="rise text-sm font-semibold uppercase tracking-[0.18em] text-vlm">DocMind</p>
+          <h1 className="rise mt-4 max-w-4xl font-reading text-[44px] font-semibold leading-[1.05] tracking-tight sm:text-[76px]" style={{ animationDelay: "80ms" }}>
+            Read every document twice.
+          </h1>
+          <p className="rise mt-6 max-w-2xl text-lg text-ink-soft sm:text-xl" style={{ animationDelay: "160ms" }}>
+            A vision model looks at the page. OCR reads its text. DocMind shows where they agree, where each answer came from, and how far to trust it.
+          </p>
+          <div className="rise mt-9 flex flex-wrap justify-center gap-3" style={{ animationDelay: "240ms" }}>
+            <Link href="/ask" className="inline-flex h-12 items-center rounded-full bg-primary px-7 text-[15px] font-semibold text-on-primary transition hover:brightness-110 active:scale-[0.98]">Open the workspace</Link>
+            <Link href="/about" className="inline-flex h-12 items-center rounded-full border border-rule px-7 text-[15px] transition hover:border-ink">How it works</Link>
           </div>
+          <ConverterHero className="rise mt-14 w-full max-w-4xl" />
+        </div>
+      </section>
+
+      {/* two readers, one verdict */}
+      <section className="mx-auto max-w-6xl px-6 py-24">
+        <Reveal className="mx-auto max-w-3xl text-center">
+          <h2 className="font-reading text-4xl font-semibold tracking-tight sm:text-5xl">Two readers. One verdict.</h2>
+          <p className="mt-4 text-lg text-ink-soft">They fail in different ways, which is exactly why reading twice works.</p>
+        </Reveal>
+        <div className="mt-14 grid gap-5 md:grid-cols-3">
+          {[
+            { k: "eye" as const, tone: "text-vlm bg-vlm-soft", title: "The vision model sees the page", text: "Qwen2.5-VL reads page images directly, so layout, tables, stamps and handwriting stay intact." },
+            { k: "text" as const, tone: "text-ocr bg-ocr-soft", title: "OCR reads the words", text: "The page is turned into text and Qwen2.5 answers from it: precise with words, blind to what OCR missed." },
+            { k: "seal" as const, tone: "text-agree bg-agree-soft", title: "You get one verdict", text: "Which answer to use, whether the document backs it, and a trust score with its reasons." },
+          ].map((c, i) => (
+            <Reveal key={c.title} delay={i * 120} className="card flex flex-col gap-3 p-7">
+              <span className={`flex h-12 w-12 items-center justify-center rounded-2xl ${c.tone}`}><Icon kind={c.k} /></span>
+              <h3 className="text-xl font-semibold">{c.title}</h3>
+              <p className="text-ink-soft">{c.text}</p>
+            </Reveal>
+          ))}
+        </div>
+      </section>
+
+      {/* explainability: evidence, look closer */}
+      <section className="border-y border-rule bg-sheet">
+        <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 py-24 lg:grid-cols-2">
+          <Reveal>
+            <p className="eyebrow">Explainable by design</p>
+            <h2 className="mt-3 font-reading text-4xl font-semibold tracking-tight sm:text-5xl">See where every answer came from.</h2>
+            <p className="mt-5 text-lg text-ink-soft">Both readers mark the spot they read. If they disagree, DocMind enlarges that spot and reads it again. Then it hides the evidence and asks once more: if the answer survives, the highlight was not what it relied on.</p>
+            <ul className="mt-6 flex flex-col gap-2 text-ink-soft">
+              <li className="flex gap-2.5"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-vlm" />Evidence boxes from both readers, on the page</li>
+              <li className="flex gap-2.5"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-ocr" />A closer look whenever the answers differ</li>
+              <li className="flex gap-2.5"><span className="mt-2 h-2 w-2 shrink-0 rounded-full bg-agree" />A faithfulness test, so explanations are checked, not assumed</li>
+            </ul>
+          </Reveal>
+          <Reveal delay={150}>
+            <figure className="card overflow-hidden p-0 shadow-xl shadow-black/5">
+              <div className="flex flex-col gap-2.5 bg-paper p-7">
+                <span className="h-2.5 w-24 rounded bg-muted/50" />
+                <span className="h-2 w-full rounded bg-track" /><span className="h-2 w-5/6 rounded bg-track" />
+                <div className="relative mt-2 rounded-md px-3 py-2.5">
+                  <span aria-hidden className="absolute inset-0 rounded-md border-[3px] border-vlm" />
+                  <span aria-hidden className="absolute inset-1 rounded border-2 border-ocr bg-ocr/10" />
+                  <span className="relative font-reading text-xl">The audit committee chair is Meera Iyer.</span>
+                </div>
+                <span className="h-2 w-4/5 rounded bg-track" /><span className="h-2 w-2/3 rounded bg-track" />
+              </div>
+              <figcaption className="grid gap-3 border-t border-rule p-6 sm:grid-cols-2">
+                <div><div className="text-[13px] font-semibold text-vlm">Vision model</div><div className="font-reading text-lg">Meera Iyer</div></div>
+                <div><div className="text-[13px] font-semibold text-ocr-text">OCR + text model</div><div className="font-reading text-lg">Meera <mark className="rounded bg-bad-soft px-1 text-bad-text">lyer</mark></div></div>
+                <p className="text-sm text-ink-soft sm:col-span-2">Looking closer reads “Meera Iyer”: the vision answer is confirmed. <span className="text-muted">From a real run on an 8-page report.</span></p>
+              </figcaption>
+            </figure>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* trust you can measure: live numbers from the latest real experiment, or nothing */}
+      <section className="mx-auto max-w-6xl px-6 py-24">
+        <Reveal className="mx-auto max-w-3xl text-center">
+          <h2 className="font-reading text-4xl font-semibold tracking-tight sm:text-5xl">Trust you can measure.</h2>
+          <p className="mt-4 text-lg text-ink-soft">A trust score is only useful if it predicts mistakes. DocMind tests that on questions with known answers.</p>
+        </Reveal>
+        {t ? (
+          <Reveal delay={120} className="mt-12 grid gap-5 sm:grid-cols-3">
+            {[["AUROC of the trust score", t.auroc_trust == null ? "n/a" : t.auroc_trust.toFixed(2), "how well it separates right from wrong answers (0.5 = chance)"],
+              ["Accuracy, most-trusted quarter", pct(t.risk_coverage[0]?.accuracy, 0), `answering only the top ${t.risk_coverage[0]?.n} of ${t.n} questions`],
+              ["Accuracy, every question", pct(t.accuracy, 0), `recommended answer, all ${t.n} questions`]].map(([k, v, s]) => (
+              <div key={k} className="card flex flex-col gap-1 p-7 text-center">
+                <span className="font-mono text-5xl font-medium tracking-tight">{v}</span>
+                <span className="mt-2 font-semibold">{k}</span>
+                <span className="text-sm text-muted">{s}</span>
+              </div>
+            ))}
+            <p className="text-center text-sm text-muted sm:col-span-3">From experiment {exp!.id} “{exp!.name}”, real models. <Link href="/research" className="underline">See the full results</Link>.</p>
+          </Reveal>
         ) : (
-          <>
-            <div className="flex flex-wrap items-baseline gap-x-4 border-b border-rule px-4 py-2">
-              <h1 className="truncate font-reading text-lg font-semibold">{doc.filename}</h1>
-              <span className="text-sm text-muted">{doc.n_pages} {doc.n_pages === 1 ? "page" : "pages"}</span>
-              {research && ocr && (
-                <span className="ml-auto flex items-center gap-2 text-sm text-muted">
-                  OCR cached for {ocr.cached_pages} of {ocr.total} pages
-                  {ocr.status === "running" ? " (running…)" : ocr.cached_pages < ocr.total && <button className="btn-quiet !py-0.5" onClick={runOcr}>Run OCR on all pages</button>}
-                </span>
-              )}
-            </div>
-            <PageStrip docId={doc.id} nPages={doc.n_pages} onOpen={setViewer}
-              vlmPages={lastPayload?.vlm?.pages ?? []} ocrPages={lastPayload?.ocr?.pages ?? []} />
-            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-              {messages.length === 0 && <p className="mx-auto max-w-xl text-muted">Ask something the page answers, such as a total, a date, a name, or a value in a table.</p>}
-              <div className="mx-auto max-w-5xl space-y-5">
-                {messages.map((m) => m.role === "user" ? (
-                  <p key={m.id} className="font-reading text-lg font-semibold">{m.content}</p>
-                ) : (
-                  <div key={m.id}>
-                    {m.payload.demo && <p className="mb-1 text-xs text-warn">Demo mode: these answers come from text-matching stand-ins, not from the models.</p>}
-                    <AnswerPair p={m.payload} docId={doc.id} research={research} onOpenPage={setViewer} />
-                  </div>
-                ))}
-                {busy && <p role="status" className="text-sm text-muted">Reading the document… the first question can take a while because OCR runs on every page.</p>}
-                <div ref={feedEnd} />
-              </div>
-            </div>
-            <div className="border-t border-rule bg-sheet px-4 py-3">
-              {error && <p role="alert" className="mx-auto mb-2 max-w-5xl rounded-[4px] bg-bad-soft p-2 text-sm text-bad">{error}</p>}
-              <div className="mx-auto flex max-w-5xl flex-wrap items-end gap-2">
-                <label className="sr-only" htmlFor="q">Your question</label>
-                <textarea id="q" rows={2} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="What is the total due?"
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void ask(); } }}
-                  className="field min-w-[12rem] flex-1 resize-none font-reading text-base" />
-                {research && (
-                  <div className="flex flex-col gap-1 text-sm">
-                    <select aria-label="Which pipelines to run" className="field" value={askMode} onChange={(e) => setAskMode(e.target.value as any)}>
-                      <option value="both">Both pipelines</option><option value="vlm">Vision only</option><option value="ocr">OCR + text only</option>
-                    </select>
-                    <label className="flex items-center gap-1"><input type="checkbox" checked={short} onChange={(e) => setShort(e.target.checked)} /> Short answers</label>
-                  </div>
-                )}
-                <button className="btn" disabled={busy || !question.trim()} onClick={() => void ask()}>{busy ? "Asking…" : "Ask"}</button>
-              </div>
-            </div>
-          </>
+          <Reveal delay={120} className="mx-auto mt-10 max-w-xl text-center text-ink-soft">
+            No finished experiment with trust scores yet. <Link href="/research" className="text-vlm underline">Run one</Link> to see these numbers for your own questions.
+          </Reveal>
         )}
-      </main>
-      {doc && viewer != null && <PageViewer docId={doc.id} page={viewer} nPages={doc.n_pages} research={research} onClose={() => setViewer(null)} onPage={setViewer} />}
+      </section>
+
+      {/* closing call */}
+      <section className="dark bg-bench text-ink">
+        <Reveal className="mx-auto flex max-w-4xl flex-col items-center px-6 py-24 text-center">
+          <h2 className="font-reading text-4xl font-semibold tracking-tight sm:text-5xl">Your documents stay on this machine.</h2>
+          <p className="mt-4 max-w-2xl text-lg text-ink-soft">Both models run locally on the GPU. Nothing is uploaded anywhere, and every answer is kept in your history.</p>
+          <Link href="/ask" className="mt-9 inline-flex h-12 items-center rounded-full bg-primary px-7 text-[15px] font-semibold text-on-primary transition hover:brightness-110 active:scale-[0.98]">Open the workspace</Link>
+        </Reveal>
+      </section>
     </div>
   );
 }

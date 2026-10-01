@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from PIL import Image
 
@@ -150,9 +150,38 @@ class QwenVLM:
         """Text-only call to the same VLM, so the vision pipeline never borrows the text model."""
         return self._run([{"type": "text", "text": prompts.combine_user_text(question, partials, history)}], short, None)
 
-    def _run(self, content: List[dict], short: bool, images: Optional[List[Image.Image]], part: bool = False) -> str:
+    def locate(self, images: List[Image.Image], page_labels: List[int], question: str, answer: str) -> Optional[Dict[str, Any]]:
+        """Where on the pages the answer is written: {"page": 0-based, "box": [x0, y0, x1, y1] as 0..1 fractions} or None.
+        Qwen2.5-VL answers in pixels of the image as the processor resized it; image_grid_thw gives that size."""
+        content: List[dict] = []
+        for lab in page_labels:
+            content.append({"type": "text", "text": f"Page {lab + 1}:"})
+            content.append({"type": "image"})
+        content.append({"type": "text", "text": prompts.locate_text(question, answer, [p + 1 for p in page_labels])})
+        text, grids = self._run(content, False, images, system=prompts.SYSTEM_LOCATE, with_grid=True)
+        found = prompts.parse_box(text)
+        if not found:
+            return None
+        page, (x0, y0, x1, y1) = found
+        idx = page_labels.index(page - 1) if page and (page - 1) in page_labels else (0 if len(page_labels) == 1 else None)
+        if idx is None:
+            return None
+        _, gh, gw = (int(v) for v in grids[idx])
+        h, w = gh * 14, gw * 14   # Qwen2.5-VL patch size: resized image = grid x 14 px
+        box = [max(0.0, min(1.0, v)) for v in (x0 / w, y0 / h, x1 / w, y1 / h)]
+        if box[2] <= box[0] or box[3] <= box[1]:
+            return None
+        return {"page": page_labels[idx], "box": box, "raw": text}
+
+    def transcribe(self, image: Image.Image) -> str:
+        """Exact text of a (zoomed) image region, for the look-closer re-check."""
+        content = [{"type": "image"}, {"type": "text", "text": prompts.TRANSCRIBE}]
+        return self._run(content, True, [image], system=prompts.SYSTEM_TRANSCRIBE)
+
+    def _run(self, content: List[dict], short: bool, images: Optional[List[Image.Image]], part: bool = False,
+             system: Optional[str] = None, with_grid: bool = False):
         torch = self._torch
-        messages = [{"role": "system", "content": prompts.system_prompt(short, part)}, {"role": "user", "content": content}]
+        messages = [{"role": "system", "content": system or prompts.system_prompt(short, part)}, {"role": "user", "content": content}]
         prompt = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         with GPU_LOCK:
             try:
@@ -160,7 +189,10 @@ class QwenVLM:
                 with torch.inference_mode():
                     out = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens, do_sample=False)
                 new = out[:, inputs["input_ids"].shape[1]:]
-                return self.processor.batch_decode(new, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
+                text = self.processor.batch_decode(new, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
+                if with_grid:
+                    return text, inputs["image_grid_thw"].tolist()
+                return text
             except torch.cuda.OutOfMemoryError as e:
                 raise RuntimeError("CUDA out of memory during VLM generation. Lower VLM_PAGE_CAP (pages per batch) or VLM_MAX_PIXELS.") from e
             finally:

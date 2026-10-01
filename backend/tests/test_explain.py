@@ -118,3 +118,10 @@ def test_incomplete_answer_is_called_out():
     f = _by_kind(explain(r, LAYER, LAYER))
     assert f["verdict"]["title"] == "The OCR pipeline gave the more complete answer"
     assert "leaves out: “Revenue was 48.2 million.”" in f["verdict"]["text"]
+
+
+def test_quoted_words_keep_the_answer_s_capitalisation():
+    ref = "The audit committee chair is Meera Iyer."
+    r = _result("Meera Iyer", "The audit committee chair is Meera lyer.", ref)
+    text = _by_kind(explain(r, "The audit committee chair is Meera lyer.", ref))["recognition"]["text"]
+    assert "The vision model read “Iyer”" in text

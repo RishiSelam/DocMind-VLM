@@ -72,6 +72,16 @@ def conn_ctx() -> Iterator[sqlite3.Connection]:
 def init_db() -> None:
     with conn_ctx() as c:
         c.executescript(SCHEMA)
+        # History follows the file's content: conversations remember the sha256 of their document, so they survive
+        # the document being deleted and re-uploaded, and every copy of the same file shares them. Additive only.
+        if "doc_sha256" not in {r[1] for r in c.execute("PRAGMA table_info(conversations)")}:
+            c.execute("ALTER TABLE conversations ADD COLUMN doc_sha256 TEXT")
+        c.execute("UPDATE conversations SET doc_sha256 = (SELECT sha256 FROM documents d WHERE d.id = conversations.doc_id) "
+                  "WHERE doc_sha256 IS NULL AND doc_id IS NOT NULL")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_conversations_sha ON conversations(doc_sha256)")
+        # Per-question explainability results of experiments (trust, recommended answer). Additive only.
+        if "extra_json" not in {r[1] for r in c.execute("PRAGMA table_info(experiment_items)")}:
+            c.execute("ALTER TABLE experiment_items ADD COLUMN extra_json TEXT NOT NULL DEFAULT '{}'")
 
 
 def new_id(prefix: str = "") -> str:
@@ -96,6 +106,12 @@ def add_document(filename: str, path: str, n_pages: int, size_bytes: int, sha256
 def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
     with conn_ctx() as c:
         r = c.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+        return dict(r) if r else None
+
+
+def find_document_by_sha256(sha256: str) -> Optional[Dict[str, Any]]:
+    with conn_ctx() as c:
+        r = c.execute("SELECT * FROM documents WHERE sha256=? ORDER BY created_at DESC LIMIT 1", (sha256,)).fetchone()
         return dict(r) if r else None
 
 
@@ -135,7 +151,8 @@ def create_conversation(title: str, doc_id: Optional[str]) -> Dict[str, Any]:
     cid = new_id("conv_")
     now = time.time()
     with conn_ctx() as c:
-        c.execute("INSERT INTO conversations(id,title,doc_id,created_at,updated_at) VALUES (?,?,?,?,?)", (cid, title, doc_id, now, now))
+        c.execute("INSERT INTO conversations(id,title,doc_id,doc_sha256,created_at,updated_at) "
+                  "VALUES (?,?,?,(SELECT sha256 FROM documents WHERE id=?),?,?)", (cid, title, doc_id, doc_id, now, now))
     return get_conversation(cid)  # type: ignore[return-value]
 
 
@@ -148,6 +165,34 @@ def get_conversation(cid: str) -> Optional[Dict[str, Any]]:
 def list_conversations() -> List[Dict[str, Any]]:
     with conn_ctx() as c:
         return _rows(c.execute("SELECT * FROM conversations ORDER BY updated_at DESC"))
+
+
+def attach_conversation(cid: str, doc_id: str) -> None:
+    """Point an earlier conversation about the same file at the copy now in use (its old copy may be gone)."""
+    with conn_ctx() as c:
+        c.execute("UPDATE conversations SET doc_id=? WHERE id=?", (doc_id, cid))
+
+
+def normalize_question(q: str) -> str:
+    return " ".join(q.lower().split()).rstrip(" ?.!")
+
+
+def previous_answers(sha256: str, question: str) -> List[Dict[str, Any]]:
+    """Earlier answers to the same question about the same file content, newest first.
+    Each item: the question's message and the assistant message that answered it."""
+    want = normalize_question(question)
+    out: List[Dict[str, Any]] = []
+    with conn_ctx() as c:
+        qs = c.execute("SELECT m.* FROM messages m JOIN conversations k ON k.id = m.conversation_id "
+                       "WHERE k.doc_sha256=? AND m.role='user' ORDER BY m.created_at DESC", (sha256,)).fetchall()
+        for q in qs:
+            if normalize_question(q["content"]) != want:
+                continue
+            a = c.execute("SELECT * FROM messages WHERE conversation_id=? AND role='assistant' AND created_at>=? "
+                          "ORDER BY created_at LIMIT 1", (q["conversation_id"], q["created_at"])).fetchone()
+            if a:
+                out.append({"question": dict(q), "answer": {**dict(a), "payload": json.loads(a["payload_json"] or "{}")}})
+    return out
 
 
 def delete_conversation(cid: str) -> None:
@@ -234,7 +279,8 @@ def delete_experiment(exp_id: str) -> None:
 def add_experiment_item(exp_id: str, idx: int, item: Dict[str, Any]) -> None:
     with conn_ctx() as c:
         c.execute(
-            "INSERT OR REPLACE INTO experiment_items VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO experiment_items(exp_id, idx, qid, question, gold_json, vlm_pred, ocr_pred, vlm_scores_json, "
+            "ocr_scores_json, vlm_ms, ocr_ms, answer_in_ocr, agree, extra_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 exp_id, idx, item.get("qid"), item.get("question"), json.dumps(item.get("gold", [])),
                 item.get("vlm_pred"), item.get("ocr_pred"),
@@ -242,6 +288,7 @@ def add_experiment_item(exp_id: str, idx: int, item: Dict[str, Any]) -> None:
                 item.get("vlm_ms"), item.get("ocr_ms"),
                 None if item.get("answer_in_ocr") is None else int(bool(item["answer_in_ocr"])),
                 None if item.get("agree") is None else int(bool(item["agree"])),
+                json.dumps(item.get("extra") or {}),
             ),
         )
 
@@ -253,4 +300,5 @@ def list_experiment_items(exp_id: str) -> List[Dict[str, Any]]:
         r["gold"] = json.loads(r.pop("gold_json") or "[]")
         r["vlm_scores"] = json.loads(r.pop("vlm_scores_json") or "{}")
         r["ocr_scores"] = json.loads(r.pop("ocr_scores_json") or "{}")
+        r["extra"] = json.loads(r.pop("extra_json", None) or "{}")
     return rows

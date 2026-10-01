@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..config import get_settings
 from . import audit as auditsvc
-from . import explain, monitoring, ocr as ocrsvc, pdf as pdfsvc, verification
+from . import evidence, explain, monitoring, ocr as ocrsvc, pdf as pdfsvc, verification
 from .models import hub
 from .prompts import NOT_FOUND
 from .retrieval import rank_pages, select_pages
@@ -116,6 +116,16 @@ def merge_parts(model: Any, question: str, partials: List[Tuple[str, str]], hist
     return model.combine(question, found, history, short), True
 
 
+def answer_config() -> Dict[str, Any]:
+    """Everything that changes an answer. Saved with each answer, so a saved answer is reused only when all of it matches."""
+    from .prompts import PROMPT_VERSION
+    s = get_settings()
+    return {"prompt_version": PROMPT_VERSION, "demo": hub.demo, "explain": [s.explain, s.look_closer, s.faithfulness], "vlm_model": getattr(hub.vlm, "name", None),
+            "llm_model": getattr(hub.llm, "name", None), "ocr_engine": ocrsvc.cache_key(), "read_all_pages": s.read_all_pages,
+            "vlm_page_cap": s.vlm_page_cap, "match_pages": s.match_pages, "max_context_chars": s.max_context_chars,
+            "vlm_max_pixels": s.vlm_max_pixels, "max_new_tokens": s.max_new_tokens}
+
+
 def run_ask(
     doc: Dict[str, Any],
     question: str,
@@ -151,7 +161,7 @@ def run_ask(
         "retrieval": {"ranked": [{"page": p, "score": sc} for p, sc in ranked], "vlm_pages": vlm_pages,
                       "corpus": corpus_name, "page_cap": s.vlm_page_cap, "match_pages": s.match_pages,
                       "read_all": s.read_all_pages},
-        "vlm": None, "ocr": None, "verification": None, "audit": [],
+        "vlm": None, "ocr": None, "verification": None, "audit": [], "config": answer_config(),
     }
 
     # ---- VLM pipeline ----------------------------------------------------------------------------
@@ -190,6 +200,7 @@ def run_ask(
     ocr_cost_ms = llm_ms = ocr_wall_ms = 0.0
     context = ""
     ocr_full_text: Optional[str] = None  # every OCR'd page, untruncated; None if OCR did not complete
+    ocr_used: Dict[int, Dict[str, Any]] = {}  # OCR pages with their boxes, for locating the OCR answer's evidence
     if want_ocr:
         out = {"answer": None, "pages": [], "ms": 0.0, "ocr_ms": 0.0, "llm_ms": 0.0, "engine": ocrsvc.cache_key(),
                "context_chars": 0, "truncated": False, "error": None, "batches": [], "combined": False}
@@ -202,6 +213,7 @@ def run_ask(
             ocr_wall_ms = (time.perf_counter() - t1) * 1000
             ocr_cost_ms = sum(float(v.get("ms") or 0.0) for v in pages.values())
             ocr_full_text = "\n".join(pages[p]["text"] for p in sorted(pages))
+            ocr_used = pages
             if s.read_all_pages:   # every page's text, in as many parts as the context budget needs
                 chunks = text_chunks(pages, s.max_context_chars)
                 truncated = False
@@ -247,10 +259,16 @@ def run_ask(
     reference = "\n".join(layers.values()) if layers else None
     sims = [a["ocr_vs_layer_similarity"] for a in result["audit"] if a.get("ocr_vs_layer_similarity") is not None]
     result["scorecard"] = verification.scorecard(v, o, reference, round(sum(sims) / len(sims), 4) if sims else None, n)
+    xai_ms = 0.0
+    if s.explain and v and o and v.get("answer") is not None and o.get("answer") is not None:
+        t_x = time.perf_counter()
+        result["xai"] = evidence.explain(doc, result, ocr_used, question, short, hub)
+        xai_ms = (time.perf_counter() - t_x) * 1000
 
     total_ms = (time.perf_counter() - t_start) * 1000
     result["timings"] = {"retrieval_ms": round(retrieval_ms, 1), "vlm_ms": round(vlm_ms, 1), "ocr_ms": round(ocr_cost_ms, 1),
-                         "ocr_wall_ms": round(ocr_wall_ms, 1), "llm_ms": round(llm_ms, 1), "total_ms": round(total_ms, 1)}
+                         "ocr_wall_ms": round(ocr_wall_ms, 1), "llm_ms": round(llm_ms, 1), "xai_ms": round(xai_ms, 1),
+                         "total_ms": round(total_ms, 1)}
     result["explanation"] = explain.explain(result, ocr_full_text, reference)
     monitoring.record({**result["timings"], "mode": mode, "doc": doc["id"], "pages": n})
     if return_context:

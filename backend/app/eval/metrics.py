@@ -5,7 +5,7 @@ import math
 import random
 import re
 import statistics
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..services.prompts import NOT_FOUND
 
@@ -140,4 +140,49 @@ def aggregate(items: List[Dict]) -> Dict:
     # OCR-loss cases: VLM answered correctly (contains) while the gold answer never appeared in the OCR text
     loss = [it for it in known if not it["answer_in_ocr"] and it["vlm_scores"].get("contains", 0) == 1]
     out["ocr_loss_cases"] = len(loss)
+    out["trust"] = selective(items)
+    out["by_type"] = by_type(items)
     return out
+
+
+def by_type(items: List[Dict]) -> Optional[Dict]:
+    """Vision vs OCR accuracy per question type (DocVQA tags: layout, table/list, handwritten, figure/diagram, ...)."""
+    groups: Dict[str, List[Dict]] = {}
+    for it in items:
+        for t in (it.get("extra") or {}).get("types") or []:
+            groups.setdefault(t, []).append(it)
+    if not groups:
+        return None
+    return {t: {"n": len(g), "vlm_anls": round(mean([i["vlm_scores"].get("anls", 0) for i in g]), 4),
+                "ocr_anls": round(mean([i["ocr_scores"].get("anls", 0) for i in g]), 4)}
+            for t, g in sorted(groups.items(), key=lambda kv: -len(kv[1]))}
+
+
+def auroc(scores: Sequence[float], labels: Sequence[bool]) -> Optional[float]:
+    """Probability that a random correct item scores higher than a random wrong one (ties count half).
+    0.5 = no better than chance, 1.0 = separates them perfectly. None when one class is missing."""
+    pos = [s for s, y in zip(scores, labels) if y]
+    neg = [s for s, y in zip(scores, labels) if not y]
+    if not pos or not neg:
+        return None
+    wins = sum((p > q) + 0.5 * (p == q) for p in pos for q in neg)
+    return round(wins / (len(pos) * len(neg)), 4)
+
+
+def selective(items: List[Dict]) -> Optional[Dict]:
+    """Does the trust score predict wrong answers? Accuracy of the recommended answer when only the most-trusted
+    share of questions is answered (risk-coverage), and AUROC for trust and for plain agreement."""
+    rows = [it for it in items if (it.get("extra") or {}).get("trust") is not None and it["extra"].get("recommended_correct") is not None]
+    if not rows:
+        return None
+    t = [r["extra"]["trust"] for r in rows]
+    y = [bool(r["extra"]["recommended_correct"]) for r in rows]
+    ranked = [ok for _, ok in sorted(zip(t, y), key=lambda z: -z[0])]
+    curve = []
+    for cov in (0.25, 0.5, 0.75, 1.0):
+        k = max(1, round(cov * len(ranked)))
+        curve.append({"coverage": cov, "n": k, "accuracy": round(sum(ranked[:k]) / k, 4)})
+    agree = [1.0 if r.get("agree") else 0.0 for r in rows]
+    unrated = sum(1 for it in items if (it.get("extra") or {}).get("trust_level") in ("unknown", "not rated"))
+    return {"n": len(rows), "unrated": unrated, "accuracy": round(sum(y) / len(y), 4),
+            "auroc_trust": auroc(t, y), "auroc_agreement": auroc(agree, y), "risk_coverage": curve}

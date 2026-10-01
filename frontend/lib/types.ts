@@ -1,6 +1,7 @@
-export type Doc = { id: string; filename: string; n_pages: number; size_bytes: number; created_at: number; ocr?: OcrStatus };
+export type Doc = { id: string; filename: string; n_pages: number; size_bytes: number; created_at: number; sha256?: string; reused?: boolean; ocr?: OcrStatus };
 export type OcrStatus = { status: "idle" | "running" | "done" | "error"; cached_pages: number; total: number; error?: string | null };
-export type Conversation = { id: string; title: string; doc_id: string | null; created_at: number; updated_at: number };
+// doc_sha256: the content of the file the conversation is about; it outlives any one uploaded copy
+export type Conversation = { id: string; title: string; doc_id: string | null; doc_sha256?: string | null; created_at: number; updated_at: number };
 
 export type Pipeline = {
   answer: string | null; pages: number[]; ms: number; error: string | null;
@@ -28,9 +29,22 @@ export type AskPayload = {
   retrieval: { ranked: { page: number; score: number }[]; vlm_pages: number[]; corpus: string; page_cap: number; match_pages: boolean; read_all?: boolean };
   vlm: Pipeline | null; ocr: Pipeline | null; verification: Verification | null; audit: Audit[];
   timings: Record<string, number>; scorecard?: Scorecard | null; explanation?: Finding[];
+  reused_from?: { message_id: string; conversation_id: string; asked_at: number }; // a saved answer shown again
+  xai?: Xai;
+};
+// Explainability: boxes are { page: 0-based, box: [x0, y0, x1, y1] as fractions of the page }
+export type EvBox = { page: number; box: [number, number, number, number]; text?: string; score?: number };
+export type Place = "same place" | "same page" | "different pages" | null;
+export type Trust = { score: number | null; level: "high" | "medium" | "low" | "unknown" | "not rated"; recommended: "vlm" | "ocr" | null; reasons: string[] };
+export type Xai = {
+  vision: EvBox | null; ocr: EvBox[]; reference: EvBox[]; agreement: Place; vision_at_reference: Place; ocr_at_reference: Place;
+  look_closer: { page: number; box: [number, number, number, number]; transcription: string; supports: "vlm" | "ocr" | null;
+    vision_not_seen: string[]; ocr_not_seen: string[]; vision_confirmed: string[]; ocr_confirmed: string[] } | null;
+  faithfulness: { vlm?: { answer_without_evidence: string; survived: boolean }; ocr?: { answer_without_evidence: string; survived: boolean } };
+  skipped: string | null; trust: Trust; ms?: number;
 };
 export type Finding = { kind: "verdict" | "recognition" | "speed" | "pages"; title: string; text: string };
-export type ScoreSide = { answered: boolean; error: boolean; ms: number | null; pages_read: number; support: number | null };
+export type ScoreSide = { answered: boolean; error: boolean; ms: number | null; pages_read: number; support: number | null; missing?: string[] };
 export type Scorecard = {
   reference: "textlayer" | null; n_pages: number; vlm: ScoreSide | null; ocr: ScoreSide | null;
   ocr_read_accuracy: number | null; faster: "vlm" | "ocr" | null; winner: "vlm" | "ocr" | "tie" | "unknown" | null; reason: string;
@@ -47,12 +61,15 @@ export type Metrics = {
   n?: number; vlm?: Side; ocr?: Side;
   paired?: { anls_vlm_minus_ocr: { diff: number; ci_low: number; ci_high: number }; em_mcnemar: { a_only: number; b_only: number; p_value: number } };
   ocr_answer_coverage?: number | null; disagreement_rate?: number | null; ocr_loss_cases?: number;
+  trust?: { n: number; unrated: number; accuracy: number; auroc_trust: number | null; auroc_agreement: number | null;
+    risk_coverage: { coverage: number; n: number; accuracy: number }[] } | null;
+  by_type?: Record<string, { n: number; vlm_anls: number; ocr_anls: number }> | null;
 };
 export type Experiment = {
   id: string; name: string; status: "queued" | "running" | "finished" | "failed"; config: Record<string, any>; metrics: Metrics;
   progress_done: number; progress_total: number; error: string | null; created_at: number; finished_at: number | null; items?: ExpItem[];
 };
-export type Health = { status: string; demo_mode: boolean; loaded: boolean; vlm: string | null; llm: string | null; ocr_engine: string; gpu: { available: boolean; name?: string; free_gb?: number; total_gb?: number; reason?: string }; page_cap: number; match_pages: boolean };
+export type Health = { status: string; demo_mode: boolean; loaded: boolean; vlm: string | null; llm: string | null; ocr_engine: string; gpu: { available: boolean; name?: string; free_gb?: number; total_gb?: number; reason?: string }; page_cap: number; match_pages: boolean; read_all_pages?: boolean };
 export type Dataset = { name: string; path: string; n: number };
 export type OcrPage = { page: number; engine: string; text: string; boxes: { text: string; score: number; x0: number; y0: number; x1: number; y1: number }[]; render_dpi: number; mean_conf: number | null; ms: number; audit: Audit };
 export type SystemMetrics = { n_requests: number; uptime_s: number; gpu: Health["gpu"]; [k: string]: any };

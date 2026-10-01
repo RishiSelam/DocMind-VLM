@@ -75,6 +75,33 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - If a question runs out of memory, lower `VLM_PAGE_CAP` or `VLM_MAX_PIXELS`; the error is shown in the UI and the other pipeline still answers.
 - Frontend from another machine: set `NEXT_PUBLIC_API_URL=http://<workstation>:8000` in `frontend/.env.local` and add the UI's address to `CORS_ORIGINS` (see `.env.example`).
 
+### Saving the history of your documents
+
+Every question and both answers are kept in the database (`data/docmind.sqlite3`), and the history belongs to the file's content, not to one upload:
+- Uploading a file you have used before opens it with all its earlier conversations, including ones from copies you have since deleted.
+- Asking a question you already asked about that file, with the same settings, shows the saved answer instantly ("Answered from history", with **Ask again** to recompute). Follow-up questions inside a conversation are always computed fresh, because they depend on what came before. Changing a model, the prompt version, the OCR engine or the page settings means old answers are no longer reused.
+
+To keep a copy outside the database:
+- In the app: open a document and press **Download history** (Markdown; **JSON** next to it has every field).
+- For all documents at once: `cd backend && python scripts/export_history.py` writes one `.md` and one `.json` per document plus `index.md` to `data/exports/history-<date>/`. It only reads the database.
+
+`data/exports/` is in `.gitignore`, because it contains your documents' content.
+
+### Explainability: where each answer came from, and how far to trust it
+
+For short factual answers (a summary has no single place on the page), each answer gets a **Where the answer came from** card:
+- **Evidence on the page.** The vision model is asked where it read the answer (Qwen2.5-VL grounding; with several pages it first picks the page, then marks the region on that page alone). OCR's evidence is the OCR lines holding the answer's words. For PDFs with embedded text, a dashed box marks where the document itself prints the answer.
+- **Evidence agreement.** Did both methods look at the same place?
+- **Look closer.** When the answers differ, the region is enlarged and the vision model transcribes it; only the disputed words are compared ("Meera lyer" vs "Meera Iyer").
+- **Faithfulness.** The evidence is removed (masked in the image, deleted from the OCR text) and the question asked again. If the answer survives, the highlight was not what it relied on.
+- **Trust.** A transparent score from these signals, listed as reasons under the verdict (High / Medium / Low). It is a rule, not a learned model; experiments measure whether it predicts wrong answers (AUROC and accuracy of the most-trusted answers, on the Experiments page).
+
+This adds about 4–10 s per short question. Turn parts off with `EXPLAIN`, `LOOK_CLOSER`, `FAITHFULNESS` in `.env`.
+
+### The website
+
+`/` is a landing page; the workspace is `/ask`, plus `/history`, `/research` (Experiments) and `/about` (How it works). There is a light/dark switch in the header (it follows the system setting until you choose), and fonts are self-hosted, so the site works offline.
+
 ## 3. VS Code
 
 Open the `docmind/` folder. Select the interpreter `backend/.venv`. `Terminal > Run Task`:
@@ -95,9 +122,10 @@ cd backend
 python scripts/eval_docvqa.py --dataset sample/sample.jsonl --name smoke
 python scripts/eval_docvqa.py --resume EXP-0001            # continue an interrupted run
 ```
-Real DocVQA (needs internet once, `pip install datasets`):
+Real DocVQA (from the local Hugging Face cache, or with `pip install datasets` and internet once):
 ```bash
-python scripts/prepare_docvqa.py --limit 500               # writes data/eval/docvqa_val/
+pip install pyarrow                                        # reads the DocVQA copy in ~/.cache/huggingface (no network needed then)
+python scripts/prepare_docvqa.py --limit 200               # random sample (fixed seed) -> data/eval/docvqa_val/, keeps question types
 python scripts/eval_docvqa.py --dataset docvqa_val/docvqa_val.jsonl --limit 200 --name docvqa-200
 ```
 Dataset format is JSONL: `{"qid","question","answers":[...],"image":"images/x.png"}` (or `"doc":"file.pdf"`).
@@ -136,4 +164,4 @@ Uploads stream to disk in 1 MiB chunks; there is no size limit.
 
 ## 7. Not verified
 
-Real Qwen inference (no GPU was available where this was built), the Docling engine, `prepare_docvqa.py`, and the UI in a real browser (it compiles, type-checks, serves both pages, and passes the CORS preflight; nobody has looked at it yet). No Dockerfiles are included. `docs/theory.md` is not written.
+Verified since: real Qwen inference on an RTX A4000 (see `RUN_REPORT.md`), `prepare_docvqa.py` reading the local cache, and the UI in headless Chrome at desktop and phone width, light and dark. Still not verified: the Docling and PaddleOCR engines, and the UI on browsers other than Chrome. No Dockerfiles are included. `docs/theory.md` is not written.

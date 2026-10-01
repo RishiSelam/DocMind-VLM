@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     use_text_layer: bool = False    # False keeps the baseline honest: always OCR the pixels
 
     # --- retrieval / page policy ---------------------------------------
+    explain: bool = True            # locate each short answer's evidence on the page and score trust
+    look_closer: bool = True        # when the answers differ, enlarge the evidence region and re-read it
+    faithfulness: bool = True       # remove the evidence and ask again: did the answer depend on it?
     read_all_pages: bool = True     # True: both pipelines read every page, in batches that fit the GPU / context
     vlm_page_cap: int = 3           # pages per VLM call (read_all_pages) or the only pages it sees (false)
     match_pages: bool = False       # read_all_pages=false only: OCR pipeline sees the same BM25 pages as the VLM

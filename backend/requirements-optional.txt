@@ -2,4 +2,4 @@
 # docling            # OCR_ENGINE=docling  (layout + TableFormer tables). Downloads models on first use.
 # paddlepaddle       # OCR_ENGINE=paddleocr (your original baseline)
 # paddleocr
-# datasets           # scripts/prepare_docvqa.py (needs internet once)
+# pyarrow            # scripts/prepare_docvqa.py reads the DocVQA cache in ~/.cache/huggingface (or: datasets, internet once)

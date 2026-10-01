@@ -73,3 +73,9 @@ def test_scorecard_without_reference_refuses_to_pick():
     c = v.scorecard(_p("12000"), _p("12oo0"), None, None, 1)
     assert c["winner"] == "unknown" and c["vlm"]["support"] is None
     assert v.scorecard(_p("12000"), None, LAYER, None, 1)["winner"] is None
+
+
+def test_scorecard_lists_words_missing_from_the_document():
+    c = v.scorecard(_p("Meera Iyer chairs it"), _p("Meera lyer chairs it"), "The audit committee chair is Meera Iyer.", None, 8)
+    assert c["vlm"]["missing"] == ["chairs"] and c["ocr"]["missing"] == ["lyer", "chairs"]
+    assert v.scorecard(_p("x"), _p("y"), None, None, 1)["vlm"]["missing"] == []

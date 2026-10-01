@@ -51,3 +51,24 @@ def test_aggregate_shapes():
     assert agg["n"] == 2 and agg["vlm"]["anls"] == 1 and agg["ocr"]["anls"] == 0
     assert agg["ocr_answer_coverage"] == 0.0 and agg["ocr_loss_cases"] == 2 and agg["disagreement_rate"] == 1.0
     assert m.aggregate([]) == {"n": 0}
+
+
+def test_auroc_and_selective_answering():
+    from app.eval.metrics import auroc, selective
+    assert auroc([0.9, 0.8, 0.2, 0.1], [True, True, False, False]) == 1.0
+    assert auroc([0.5, 0.5], [True, False]) == 0.5 and auroc([1.0], [True]) is None
+    items = [{"agree": a, "extra": {"trust": t, "recommended_correct": c, "trust_level": "high"}}
+             for t, c, a in [(0.95, True, True), (0.9, True, True), (0.6, True, False), (0.3, False, False)]]
+    s = selective(items)
+    assert s["auroc_trust"] == 1.0 and s["accuracy"] == 0.75
+    assert s["risk_coverage"][0] == {"coverage": 0.25, "n": 1, "accuracy": 1.0} and s["risk_coverage"][-1]["accuracy"] == 0.75
+    assert selective([{"extra": {}}]) is None
+
+
+def test_by_type():
+    from app.eval.metrics import by_type
+    items = [{"vlm_scores": {"anls": 1}, "ocr_scores": {"anls": 0}, "extra": {"types": ["handwritten"]}},
+             {"vlm_scores": {"anls": 1}, "ocr_scores": {"anls": 1}, "extra": {"types": ["layout", "handwritten"]}}]
+    b = by_type(items)
+    assert b["handwritten"] == {"n": 2, "vlm_anls": 1.0, "ocr_anls": 0.5} and b["layout"]["n"] == 1
+    assert by_type([{"extra": {}}]) is None

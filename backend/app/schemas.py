@@ -11,6 +11,7 @@ class AskRequest(BaseModel):
     conversation_id: Optional[str] = None
     mode: Literal["both", "vlm", "ocr"] = "both"
     short: bool = False  # True = terse, extractive answers (evaluation style)
+    reuse: bool = True   # the same question about the same file with the same settings: return the saved answer
 
 
 class ConversationCreate(BaseModel):

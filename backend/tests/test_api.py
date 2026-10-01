@@ -127,3 +127,76 @@ def test_experiment_resume_skips_finished_items(client, eval_jsonl):
 def test_system_metrics_after_requests(client):
     m = client.get("/api/system/metrics").json()
     assert m["n_requests"] > 0 and m["total_ms"]["n"] > 0 and "gpu" in m
+
+
+def test_uploading_the_same_file_twice_reuses_the_document(client, invoice_png):
+    a = _upload(client, invoice_png).json()
+    b = _upload(client, invoice_png).json()
+    assert b["id"] == a["id"] and b.get("reused") is True
+    assert sum(d["id"] == a["id"] for d in client.get("/api/documents").json()) == 1
+
+
+def test_thumbnail_resolution_used_by_the_ui_is_accepted(client, report_pdf):
+    doc = _upload(client, report_pdf).json()
+    assert client.get(f"/api/documents/{doc['id']}/pages/1/image?dpi=40").status_code == 200
+
+
+def test_document_history_download(client, invoice_png):
+    doc = _upload(client, invoice_png).json()
+    r = client.post("/api/ask", json={"doc_id": doc["id"], "question": "What is the invoice number?"})
+    assert r.status_code == 200
+    md = client.get(f"/api/documents/{doc['id']}/history")
+    assert md.status_code == 200 and "attachment" in md.headers["content-disposition"]
+    assert "### Q: What is the invoice number?" in md.text and "**Vision model**" in md.text and "Demo mode" in md.text
+    js = client.get(f"/api/documents/{doc['id']}/history?format=json").json()
+    turn = next(t for c in js["conversations"] for t in c["turns"] if t["question"] == "What is the invoice number?")
+    assert turn["answer"]["vision"]["answer"] and turn["answer"]["ocr"]["answer"] and js["document"]["filename"] == "invoice.png"
+    assert client.get("/api/documents/doc_missing/history").status_code == 404
+
+
+def _ask(client, **body):
+    r = client.post("/api/ask", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_same_question_about_the_same_file_reuses_the_saved_answer(client, report_pdf, monkeypatch):
+    from app.api import routes
+    calls = []
+    real = routes.run_ask
+    monkeypatch.setattr(routes, "run_ask", lambda *a, **k: calls.append(1) or real(*a, **k))
+    doc = _upload(client, report_pdf).json()
+    first = _ask(client, doc_id=doc["id"], question="What is the warehouse capacity in Pune?")
+    again = _ask(client, doc_id=doc["id"], question="what is the warehouse capacity in pune")      # new conversation
+    assert len(calls) == 1
+    reused = again["assistant_message"]["payload"]["reused_from"]
+    assert reused["message_id"] == first["assistant_message"]["id"]
+    assert again["assistant_message"]["payload"]["vlm"]["answer"] == first["assistant_message"]["payload"]["vlm"]["answer"]
+    fresh = _ask(client, doc_id=doc["id"], question="What is the warehouse capacity in Pune?", reuse=False)
+    assert len(calls) == 2 and "reused_from" not in fresh["assistant_message"]["payload"]
+    _ask(client, doc_id=doc["id"], question="What is the warehouse capacity in Pune?", short=True)   # other settings
+    assert len(calls) == 3
+    # a follow-up inside a conversation depends on what came before, so it is always computed
+    _ask(client, doc_id=doc["id"], conversation_id=first["conversation_id"], question="What is the warehouse capacity in Pune?")
+    assert len(calls) == 4
+
+
+def test_history_survives_deleting_and_re_uploading_the_file(client, invoice_png):
+    doc = _upload(client, invoice_png).json()
+    conv = _ask(client, doc_id=doc["id"], question="What is the total due?")["conversation_id"]
+    assert client.delete(f"/api/documents/{doc['id']}").status_code == 200
+    again = _upload(client, invoice_png).json()
+    assert again["id"] != doc["id"]
+    c = next(c for c in client.get("/api/conversations").json() if c["id"] == conv)
+    assert c["doc_sha256"] == again["sha256"] and c["doc_id"] is None
+    # continuing that conversation re-attaches it to the new copy, and the saved answer is reused for a new chat
+    _ask(client, doc_id=again["id"], conversation_id=conv, question="Who is it billed to?")
+    assert client.get(f"/api/conversations/{conv}").json()["doc_id"] == again["id"]
+    assert "reused_from" in _ask(client, doc_id=again["id"], question="What is the total due?")["assistant_message"]["payload"]
+
+
+def test_page_crop(client, report_pdf):
+    doc = _upload(client, report_pdf).json()
+    r = client.get(f"/api/documents/{doc['id']}/pages/1/crop?x0=0.1&y0=0.1&x1=0.6&y1=0.3")
+    assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
+    assert client.get(f"/api/documents/{doc['id']}/pages/1/crop?x0=0.5&y0=0.1&x1=0.4&y1=0.3").status_code == 400

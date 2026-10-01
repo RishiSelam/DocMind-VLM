@@ -5,6 +5,7 @@ reference is the PDF's embedded text, and without it the findings say so.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from .verification import _content_tokens, is_not_found, tokens
@@ -28,8 +29,12 @@ def _n(k: int, word: str) -> str:
     return f"{k} {word}{'' if k == 1 else 's'}"
 
 
-def _quote(words: List[str]) -> str:
-    return ", ".join(f"“{w}”" for w in words[:4])
+def _quote(words: List[str], source: Optional[str] = None) -> str:
+    """Quote matched tokens; with `source`, as written there ("Iyer", not the lowercased match key "iyer")."""
+    def orig(w: str) -> str:
+        m = re.search(re.escape(w), source or "", flags=re.I)
+        return m.group(0) if m else w
+    return ", ".join(f"“{orig(w)}”" for w in words[:4])
 
 
 def _answer_tokens(answer: Optional[str]) -> List[str]:
@@ -117,17 +122,17 @@ def explain(result: Dict[str, Any], ocr_text: Optional[str], reference: Optional
                      f"{_n(checked, 'page')} checked; about {_n(missed, 'word')} of the document's text {'was' if missed == 1 else 'were'} missed or misread. "
                      f"That is {grade}.")
     if vlm_saw and reference:
-        parts.append(f"The vision model read {_quote(vlm_saw)}, which the OCR text does not contain but the document does. "
+        parts.append(f"The vision model read {_quote(vlm_saw, v.get('answer'))}, which the OCR text does not contain but the document does. "
                      "Here the vision model recognised something OCR missed.")
     elif vlm_saw:
-        parts.append(f"The vision model's answer contains {_quote(vlm_saw)}, which the OCR text does not. Either OCR missed it "
+        parts.append(f"The vision model's answer contains {_quote(vlm_saw, v.get('answer'))}, which the OCR text does not. Either OCR missed it "
                      "or the vision model is wrong; with no embedded text, only reading the page settles it.")
     if ocr_fixed:
-        parts.append(f"The OCR text does not contain {_quote(ocr_fixed)} (OCR misread or missed it), yet the OCR pipeline's answer does. "
+        parts.append(f"The OCR text does not contain {_quote(ocr_fixed, o.get('answer'))} (OCR misread or missed it), yet the OCR pipeline's answer does. "
                      "The text model repaired the OCR error from context. That helped here, but it also means the OCR pipeline "
                      "can state values OCR never read.")
     if ocr_invented:
-        parts.append(f"The OCR pipeline's answer contains {_quote(ocr_invented)}, which appears neither in the OCR text nor in the "
+        parts.append(f"The OCR pipeline's answer contains {_quote(ocr_invented, o.get('answer'))}, which appears neither in the OCR text nor in the "
                      "document. Treat that part as unsupported.")
     if parts:
         out.append({"kind": "recognition", "title": "Which method read the document better", "text": " ".join(parts)})

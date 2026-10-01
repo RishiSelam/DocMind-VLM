@@ -17,9 +17,10 @@ from ..eval import runner
 from ..eval.docvqa import list_datasets
 from ..schemas import AskRequest, ConversationCreate, ExperimentCreate
 from ..services import audit as auditsvc
+from ..services import history as historysvc
 from ..services import monitoring, ocr as ocrsvc, pdf as pdfsvc
 from ..services.models import hub
-from ..services.pipelines import _retrieval_corpus, run_ask
+from ..services.pipelines import _retrieval_corpus, answer_config, run_ask
 from ..services.retrieval import rank_pages
 
 log = logging.getLogger("docmind.api")
@@ -63,6 +64,11 @@ def upload_document(file: UploadFile = File(...)) -> Dict[str, Any]:
         raise HTTPException(400, f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(pdfsvc.ALLOWED_EXT))}")
     tag = db.new_id("f_")
     path, size, digest = pdfsvc.save_upload_stream(file.file, s.data_dir / "uploads", file.filename or "upload", tag)
+    # The same file again: reuse the existing document (and its OCR cache) instead of listing a copy.
+    same = db.find_document_by_sha256(digest)
+    if same and Path(same["path"]).exists():
+        path.unlink(missing_ok=True)
+        return {**same, "reused": True}
     try:
         n_pages = pdfsvc.count_pages(path)
     except Exception as e:  # noqa: BLE001
@@ -93,6 +99,19 @@ def delete_document(doc_id: str) -> Dict[str, str]:
     return {"deleted": doc_id}
 
 
+@router.get("/documents/{doc_id}/history")
+def document_history(doc_id: str, format: str = Query("md", pattern="^(json|md)$")):
+    """Every question asked about this document, with both answers and the verdict, as a download."""
+    h = historysvc.document_history(doc_id)
+    if h is None:
+        raise HTTPException(404, "Document not found")
+    stem = Path(h["document"]["filename"]).stem
+    disp = {"Content-Disposition": f'attachment; filename="{stem}-history.{format}"'}
+    if format == "json":
+        return Response(json.dumps(h, ensure_ascii=False, indent=2), media_type="application/json", headers=disp)
+    return PlainTextResponse(historysvc.history_markdown(h), media_type="text/markdown", headers=disp)
+
+
 @router.get("/documents/{doc_id}/file")
 def document_file(doc_id: str):
     doc = _doc_or_404(doc_id)
@@ -106,6 +125,21 @@ def page_image(doc_id: str, page: int, dpi: int = Query(110, ge=36, le=300)) -> 
     img = pdfsvc.render_page(doc["path"], idx, dpi)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
+    return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
+
+
+@router.get("/documents/{doc_id}/pages/{page}/crop")
+def page_crop(doc_id: str, page: int, x0: float = Query(ge=0, le=1), y0: float = Query(ge=0, le=1),
+              x1: float = Query(ge=0, le=1), y1: float = Query(ge=0, le=1), dpi: int = Query(200, ge=72, le=300)) -> Response:
+    """An enlarged region of a page (box as fractions of the page): what the look-closer re-check read."""
+    if x1 <= x0 or y1 <= y0:
+        raise HTTPException(400, "Empty region")
+    doc = _doc_or_404(doc_id)
+    idx = _page_or_404(doc, page)
+    img = pdfsvc.render_page(doc["path"], idx, dpi)
+    W, H = img.size
+    buf = io.BytesIO()
+    img.crop((int(x0 * W), int(y0 * H), int(x1 * W), int(y1 * H))).save(buf, format="PNG")
     return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "private, max-age=300"})
 
 
@@ -214,6 +248,27 @@ def _history(cid: str, limit: int) -> Tuple[List[Tuple[str, str]], List[Tuple[st
     return hv[-limit:], ho[-limit:]
 
 
+def _reusable_answer(doc: Dict[str, Any], req: AskRequest) -> Dict[str, Any] | None:
+    """The newest saved answer to this question about this file, made with today's settings and without errors."""
+    now = answer_config()
+    for prev in db.previous_answers(doc["sha256"], req.question):
+        p = prev["answer"]["payload"]
+        if p.get("mode") != req.mode or bool(p.get("short")) != req.short:
+            continue
+        if "config" in p:
+            if p["config"] != now:
+                continue
+        else:  # saved before settings were recorded: compare what those answers did record
+            r = p.get("retrieval") or {}
+            if (p.get("demo") != now["demo"] or r.get("read_all") != now["read_all_pages"] or r.get("page_cap") != now["vlm_page_cap"]
+                    or (p.get("ocr") and p["ocr"].get("engine") != now["ocr_engine"])):
+                continue
+        if any((p.get(k) or {}).get("error") for k in ("vlm", "ocr")):
+            continue
+        return prev
+    return None
+
+
 @router.post("/ask")
 def ask(req: AskRequest) -> Dict[str, Any]:
     s = get_settings()
@@ -226,9 +281,18 @@ def ask(req: AskRequest) -> Dict[str, Any]:
     doc = _doc_or_404(doc_id)
     if not conv:
         conv = db.create_conversation(req.question[:60], doc_id)
+    elif conv.get("doc_id") != doc_id and conv.get("doc_sha256") == doc["sha256"]:
+        db.attach_conversation(conv["id"], doc_id)   # continuing an earlier conversation about this same file
     hv, ho = _history(conv["id"], s.history_turns)
     user_msg = db.add_message(conv["id"], "user", req.question, {"doc_id": doc_id})
-    result = run_ask(doc, req.question, mode=req.mode, short=req.short, history_vlm=hv, history_ocr=ho)
+    # A follow-up depends on the conversation so far, so only an opening question can reuse a saved answer.
+    prev = _reusable_answer(doc, req) if (req.reuse and not hv and not ho) else None
+    if prev:
+        result = {**prev["answer"]["payload"], "reused_from": {
+            "message_id": prev["answer"]["id"], "conversation_id": prev["answer"]["conversation_id"],
+            "asked_at": prev["question"]["created_at"]}}
+    else:
+        result = run_ask(doc, req.question, mode=req.mode, short=req.short, history_vlm=hv, history_ocr=ho)
     summary = " | ".join(f"{k.upper()}: {(result[k] or {}).get('answer') or (result[k] or {}).get('error')}"
                          for k in ("vlm", "ocr") if result.get(k))
     assistant_msg = db.add_message(conv["id"], "assistant", summary, result)

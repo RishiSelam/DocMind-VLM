@@ -2,10 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body { height: 100%; }
-body { @apply bg-bench text-ink font-sans antialiased; font-variant-numeric: tabular-nums; }
+/* Theme. Each colour is "R G B" so Tailwind's /opacity modifiers work. Light: cool lab-bench grey, navy ink, teal for
+   the vision model and amber for OCR. Dark: the same roles, lifted so text and the two reader colours keep contrast. */
+:root {
+  --bench: 232 236 240; --sheet: 247 249 250; --paper: 255 255 255; --track: 238 241 244; --select: 221 227 234; --strip: 240 243 246;
+  --ink: 22 35 58; --ink-soft: 42 58 82; --muted: 91 107 123; --rule: 197 205 214; --hair: 225 230 235;
+  --primary: 22 35 58; --on-primary: 255 255 255;
+  --vlm: 11 122 117; --vlm-soft: 221 240 238;
+  --ocr: 168 88 12; --ocr-soft: 247 231 211; --ocr-text: 143 74 8; --ocr-light: 212 149 90;
+  --agree: 47 125 79; --agree-text: 31 107 65; --agree-soft: 220 239 227;
+  --warn: 154 103 0; --warn-text: 138 90 0; --warn-soft: 255 241 214;
+  --bad: 180 35 24; --bad-soft: 251 228 225; --bad-text: 142 27 18;
+  color-scheme: light;
+}
+.dark {
+  --bench: 13 17 23; --sheet: 22 27 34; --paper: 28 34 43; --track: 38 46 56; --select: 44 54 67; --strip: 33 40 50;
+  --ink: 230 237 243; --ink-soft: 196 205 214; --muted: 145 158 172; --rule: 52 62 75; --hair: 40 48 58;
+  --primary: 230 237 243; --on-primary: 13 17 23;
+  --vlm: 45 190 180; --vlm-soft: 17 52 50;
+  --ocr: 232 145 70; --ocr-soft: 60 39 20; --ocr-text: 240 168 105; --ocr-light: 160 104 56;
+  --agree: 63 185 120; --agree-text: 112 214 160; --agree-soft: 20 52 36;
+  --warn: 222 168 60; --warn-text: 236 190 100; --warn-soft: 58 44 14;
+  --bad: 240 100 90; --bad-soft: 62 26 24; --bad-text: 255 148 138;
+  color-scheme: dark;
+}
 
-:focus-visible { outline: 2px solid #16233A; outline-offset: 2px; }
+html, body { height: 100%; }
+body { @apply bg-bench text-ink font-sans text-[15px] leading-normal antialiased; font-variant-numeric: tabular-nums; }
+html.theme-switching * { transition: background-color 0.35s ease, border-color 0.35s ease, color 0.35s ease !important; }
+
+:focus-visible { outline: 2px solid rgb(var(--ink)); outline-offset: 2px; }
 button { @apply cursor-pointer; }
 button:disabled { @apply cursor-not-allowed opacity-50; }
 
@@ -15,8 +41,29 @@ button:disabled { @apply cursor-not-allowed opacity-50; }
 .reading th, .reading td { @apply border border-rule px-2 py-1 text-sm; }
 .reading ul { @apply list-disc pl-5; }
 
-.btn { @apply inline-flex items-center justify-center gap-2 rounded-[4px] border border-ink bg-ink px-3 py-1.5 text-sm font-medium text-white hover:bg-[#22345a]; }
-.btn-quiet { @apply inline-flex items-center justify-center gap-2 rounded-[4px] border border-rule bg-transparent px-3 py-1.5 text-sm text-ink hover:border-ink; }
-.field { @apply rounded-[4px] border border-rule bg-white px-2.5 py-1.5 text-sm; }
+.btn { @apply inline-flex items-center justify-center gap-2 rounded-md border border-primary bg-primary px-3 py-1.5 text-sm font-medium text-on-primary transition-[filter,transform] hover:brightness-110 active:scale-[0.98]; }
+.btn-quiet { @apply inline-flex items-center justify-center gap-2 rounded-md border border-rule bg-paper px-3 py-1.5 text-sm text-ink transition-colors hover:border-ink; }
+.field { @apply rounded-md border border-rule bg-paper px-3 py-2 text-sm; }
+.card { @apply rounded-[10px] border border-rule bg-paper; }
+.eyebrow { @apply text-[13px] font-semibold uppercase tracking-[0.04em] text-muted; }
+.chip { @apply inline-flex items-center rounded-full px-2.5 py-0.5 text-[13px]; }
+
+/* the converter on the landing page */
+.conv-flow { fill: none; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 6 12; animation: conv-flow 1.4s linear infinite; }
+.conv-flow-mid { animation-delay: -0.45s; }
+.conv-flow-late { animation-delay: -0.9s; }
+@keyframes conv-flow { to { stroke-dashoffset: -36; } }
+.conv-scan { animation: conv-scan 3.2s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+@keyframes conv-scan { 0% { transform: translateY(0); opacity: 0; } 10% { opacity: 1; } 90% { opacity: 1; } 100% { transform: translateY(257px); opacity: 0; } }
+.conv-seal { transform-origin: 770px 190px; animation: conv-seal 3.2s ease-in-out infinite; }
+@keyframes conv-seal { 0%, 70%, 100% { transform: scale(1); } 80% { transform: scale(1.06); } }
+/* scroll reveal: sections rise in once as they enter the window */
+.reveal { opacity: 0; transform: translateY(24px); transition: opacity 0.8s cubic-bezier(0.2, 0.7, 0.2, 1), transform 0.8s cubic-bezier(0.2, 0.7, 0.2, 1); }
+.reveal.shown { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } }
+
+@keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
 
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

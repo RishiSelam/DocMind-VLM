@@ -15,3 +15,5 @@ data/docmind.sqlite3*
 data/uploads/*
 !data/uploads/.gitkeep
 logs/
+data/exports/
+data/*.backup-*

@@ -36,6 +36,19 @@ def _single_page_doc(item: Dict[str, Any]) -> Dict[str, Any]:
     return doc
 
 
+def _trust_record(res: Dict[str, Any], gold: List[str]) -> Dict[str, Any]:
+    """What the explainability layer concluded for this question, and whether its recommended answer was right."""
+    x = res.get("xai") or {}
+    t = x.get("trust") or {}
+    rec = t.get("recommended")
+    pred = (res.get(rec) or {}).get("answer") if rec else None
+    sc = metrics.score_item(pred, gold) if pred is not None else None
+    return {"types": res.get("_types", []), "trust": t.get("score"), "trust_level": t.get("level"), "recommended": rec,
+            "recommended_correct": None if sc is None else bool(sc.get("contains") == 1 or sc.get("anls", 0) >= 0.5),
+            "evidence_agreement": x.get("agreement"), "look_closer": (x.get("look_closer") or {}).get("supports"),
+            "vision_faithful": None if "vlm" not in (x.get("faithfulness") or {}) else not x["faithfulness"]["vlm"]["survived"]}
+
+
 def run_experiment(exp_id: str, resume: bool = True) -> None:
     with _RUN_LOCK:
         exp = db.get_experiment(exp_id)
@@ -55,6 +68,7 @@ def run_experiment(exp_id: str, resume: bool = True) -> None:
                 vp = (res.get("vlm") or {}).get("answer")
                 op = (res.get("ocr") or {}).get("answer")
                 ctx = res.pop("_ocr_context", "")
+                res["_types"] = it.get("types", [])
                 gold = it["answers"]
                 record = {
                     "qid": it["qid"], "question": it["question"], "gold": gold, "vlm_pred": vp, "ocr_pred": op,
@@ -63,6 +77,7 @@ def run_experiment(exp_id: str, resume: bool = True) -> None:
                     "vlm_ms": (res.get("vlm") or {}).get("ms"), "ocr_ms": (res.get("ocr") or {}).get("ms"),
                     "answer_in_ocr": metrics.answer_in_text(gold, ctx) if res.get("ocr") else None,
                     "agree": (verify(vp, op)["verdict"] == "consistent") if (vp is not None and op is not None) else None,
+                    "extra": _trust_record(res, gold),
                 }
                 db.add_experiment_item(exp_id, idx, record)  # written immediately: a crash loses at most one item
                 db.update_experiment(exp_id, progress_done=len(db.list_experiment_items(exp_id)))

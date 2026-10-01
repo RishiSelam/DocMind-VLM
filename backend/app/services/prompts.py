@@ -17,6 +17,38 @@ SYSTEM_SHORT = (
 )
 
 
+# --- explainability: where the answer is, and an exact transcription for the look-closer re-check ---
+SYSTEM_LOCATE = "You locate text in document page images. Reply with JSON only."
+SYSTEM_TRANSCRIBE = "You transcribe text from images exactly as printed. Reply with the text only."
+TRANSCRIBE = "Transcribe all the text in this image exactly as printed, character by character, keeping numbers and spelling as they appear."
+
+
+def locate_text(question: str, answer: str, pages: List[int]) -> str:
+    which = f"page {pages[0]}" if len(pages) == 1 else f"one of pages {', '.join(map(str, pages))}"
+    return (f"Question: {question}\nAnswer: {answer}\n\nFind where on {which} the text that answers the question is printed. "
+            'Output JSON: {"page": <page number>, "bbox_2d": [x1, y1, x2, y2]} for that region, in pixel coordinates of that page image.')
+
+
+def parse_box(text: str) -> Optional[Tuple[Optional[int], Tuple[float, float, float, float]]]:
+    """Read {"page": n, "bbox_2d": [x1, y1, x2, y2]} (or a list of them; the first counts) from a model reply."""
+    import json
+    import re
+    m = re.search(r"\{[^{}]*bbox_2d[^{}]*\}", text or "")
+    if not m:
+        return None
+    try:
+        obj = json.loads(m.group(0))
+        x1, y1, x2, y2 = (float(v) for v in obj["bbox_2d"][:4])
+    except Exception:  # noqa: BLE001
+        return None
+    page = obj.get("page")
+    try:
+        page = int(page) if page is not None else None
+    except (TypeError, ValueError):
+        page = None
+    return page, (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+
+
 # Used when the model sees only some pages: a partial answer is wanted, not "not found".
 SYSTEM_PART = (
     "You are a careful document assistant reading SOME pages of a longer document; other pages are read separately "

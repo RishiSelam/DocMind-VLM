@@ -2,10 +2,10 @@
 import { useEffect, useRef, useState } from "react";
 
 // Pen colours from tailwind.config.ts. The lighter OCR step marks the text-model share of the OCR pipeline's time.
-export const COLORS = { vlm: "#0B7A75", ocr: "#A8580C", ocrLight: "#D4955A", grid: "#C5CDD6", ink: "#16233A", muted: "#5B6B7B", track: "#E8ECF0" };
+export const COLORS = { vlm: "rgb(var(--vlm))", ocr: "rgb(var(--ocr))", ocrLight: "rgb(var(--ocr-light))", grid: "rgb(var(--rule))", ink: "rgb(var(--ink))", muted: "rgb(var(--muted))", track: "rgb(var(--track))" };
 
 export type Segment = { value: number; color: string; name: string };
-export type Bar = { who: "Vision" | "OCR"; segments: Segment[]; label: string; tip: string };
+export type Bar = { who: string; segments: Segment[]; label: string; tip: string };
 export type Group = { name: string; bars: Bar[] }; // an empty name draws no group label
 
 /** 0, then 4-5 round steps (1, 2 or 5 x 10^k) that cover `max`. */
@@ -64,8 +64,8 @@ export default function BarChart({ title, groups, max, tickFmt, legend, caption 
   return (
     <figure className="m-0 min-w-0">
       <figcaption className="mb-1">
-        <div className="text-sm font-semibold">{title}</div>
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted" aria-hidden>
+        <div className="text-base font-semibold">{title}</div>
+        <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-muted" aria-hidden>
           {legend.map((l) => (
             <span key={l.name} className="inline-flex items-center gap-1">
               <span className="inline-block h-2.5 w-2.5 rounded-[2px]" style={{ background: l.color }} />{l.name}
@@ -75,24 +75,25 @@ export default function BarChart({ title, groups, max, tickFmt, legend, caption 
       </figcaption>
       <div ref={box} className="relative w-full min-w-0" onMouseLeave={() => setTip(null)}>
         <svg width={width} height={height} style={{ maxWidth: "100%" }} role="group" aria-label={`${title}. ${caption ?? ""}`} className="block">
+          {laid.flatMap((g) => g.bars.map((b) => <rect key={`${g.name}-${b.who}`} x={LEFT} y={b.y} width={plotW} height={BAR_H} style={{ fill: COLORS.track }} />))}
           {ticks.map((t) => (
             <g key={t}>
               {laid.map((g) => g.bars.length > 0 && (
                 <line key={g.name} x1={x(t)} x2={x(t)} y1={g.bars[0].y - 3} y2={g.bars[g.bars.length - 1].y + BAR_H + 3}
-                  stroke={COLORS.grid} strokeWidth={t === 0 ? 1.5 : 1} strokeDasharray={t === 0 ? undefined : "2 3"} />
+                  style={{ stroke: COLORS.grid }} strokeWidth={t === 0 ? 1.5 : 1} strokeDasharray={t === 0 ? undefined : "2 3"} />
               ))}
-              <text x={x(t)} y={plotBottom + 15} textAnchor="middle" fontSize={11} fill={COLORS.muted}>{tickFmt(t)}</text>
+              <text x={x(t)} y={plotBottom + 15} textAnchor="middle" fontSize={11} style={{ fill: COLORS.muted }}>{tickFmt(t)}</text>
             </g>
           ))}
           {laid.map((g) => (
             <g key={g.name}>
-              {g.name && <text x={0} y={g.labelY} fontSize={12} fontWeight={600} fill={COLORS.ink}>{g.name}</text>}
+              {g.name && <text x={0} y={g.labelY} fontSize={12} fontWeight={600} style={{ fill: COLORS.ink }}>{g.name}</text>}
               {g.bars.map((b) => {
                 let acc = 0;
                 const total = b.segments.reduce((a, s) => a + s.value, 0);
                 return (
                   <g key={b.who}>
-                    <text x={LEFT - 6} y={b.y + BAR_H - 3} textAnchor="end" fontSize={11} fill={COLORS.muted}>{b.who}</text>
+                    <text x={LEFT - 6} y={b.y + BAR_H - 3} textAnchor="end" fontSize={12} style={{ fill: COLORS.muted }}>{b.who}</text>
                     {b.segments.map((s, i) => {
                       const x0 = x(acc), x1 = x(acc + s.value);
                       acc += s.value;
@@ -100,10 +101,10 @@ export default function BarChart({ title, groups, max, tickFmt, legend, caption 
                       // 2px surface gap between stacked segments; rounded data end on the last one only
                       const w = Math.max(x1 - x0 - (last ? 0 : 2), s.value > 0 ? 2 : 0);
                       return last
-                        ? <path key={i} d={roundedRight(x0, b.y, w, BAR_H, Math.min(4, w))} fill={s.color} />
-                        : <rect key={i} x={x0} y={b.y} width={w} height={BAR_H} fill={s.color} />;
+                        ? <path key={i} d={roundedRight(x0, b.y, w, BAR_H, Math.min(4, w))} style={{ fill: s.color }} />
+                        : <rect key={i} x={x0} y={b.y} width={w} height={BAR_H} style={{ fill: s.color }} />;
                     })}
-                    <text x={x(total) + 6} y={b.y + BAR_H - 3} fontSize={12} fill={COLORS.ink}>{b.label}</text>
+                    <text x={x(total) + 6} y={b.y + BAR_H - 3} fontSize={12} style={{ fill: COLORS.ink }}>{b.label}</text>
                     {/* hit target: the whole row, larger than the mark */}
                     <rect x={0} y={b.y - 1} width={width} height={BAR_H + 2} fill="transparent" tabIndex={0} aria-label={b.tip}
                       onMouseMove={(e) => show(e, b.tip)} onFocus={(e) => show(e, b.tip)} onBlur={() => setTip(null)} className="outline-none focus:stroke-ink" />
@@ -114,11 +115,11 @@ export default function BarChart({ title, groups, max, tickFmt, legend, caption 
           ))}
         </svg>
         {tip && (
-          <div role="tooltip" className="pointer-events-none absolute z-10 max-w-[210px] rounded-[4px] bg-ink px-2 py-1 text-xs text-white shadow"
+          <div role="tooltip" className="pointer-events-none absolute z-10 max-w-[210px] rounded-[4px] bg-primary px-2 py-1 text-xs text-on-primary shadow"
             style={{ left: tip.x, top: tip.y }}>{tip.text}</div>
         )}
       </div>
-      {caption && <p className="mt-1 text-xs text-muted">{caption}</p>}
+      {caption && <p className="mt-2 text-[13px] text-muted">{caption}</p>}
       <details className="mt-1 text-xs">
         <summary className="cursor-pointer text-muted">Show as table</summary>
         <table className="mt-1 w-full text-left">

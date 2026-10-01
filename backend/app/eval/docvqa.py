@@ -40,7 +40,7 @@ def load_dataset(path: str | Path, limit: Optional[int] = None) -> List[Dict[str
                 raise FileNotFoundError(f"{path}:{i + 1} references missing file {p}")
             answers = r.get("answers") or ([r["answer"]] if "answer" in r else [])
             items.append({"qid": str(r.get("qid", i)), "question": r["question"], "answers": [str(a) for a in answers],
-                          "file": str(p), "page": int(r.get("page", 1)) - 1})
+                          "file": str(p), "page": int(r.get("page", 1)) - 1, "types": list(r.get("types") or [])})
             if limit and len(items) >= limit:
                 break
     return items
