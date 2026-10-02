@@ -164,4 +164,4 @@ Uploads stream to disk in 1 MiB chunks; there is no size limit.
 
 ## 7. Not verified
 
-Verified since: real Qwen inference on an RTX A4000 (see `RUN_REPORT.md`), `prepare_docvqa.py` reading the local cache, and the UI in headless Chrome at desktop and phone width, light and dark. Still not verified: the Docling and PaddleOCR engines, and the UI on browsers other than Chrome. No Dockerfiles are included. `docs/theory.md` is not written.
+Verified since: real Qwen inference on an RTX A4000 (see `RUN_REPORT.md`), `prepare_docvqa.py` reading the local cache, and the UI in headless Chrome at desktop and phone width, light and dark. Still not verified: the Docling and PaddleOCR engines, and the UI on browsers other than Chrome. N
