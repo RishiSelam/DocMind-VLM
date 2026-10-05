@@ -96,14 +96,14 @@ export default function Landing() {
                 <div className="relative mt-2 rounded-md px-3 py-2.5">
                   <span aria-hidden className="absolute inset-0 rounded-md border-[3px] border-vlm" />
                   <span aria-hidden className="absolute inset-1 rounded border-2 border-ocr bg-ocr/10" />
-                  <span className="relative font-reading text-xl">The audit committee chair is Meera Iyer.</span>
+                  <span className="relative font-reading text-xl">The Pune warehouse has a capacity of 12000 pallets.</span>
                 </div>
                 <span className="h-2 w-4/5 rounded bg-track" /><span className="h-2 w-2/3 rounded bg-track" />
               </div>
               <figcaption className="grid gap-3 border-t border-rule p-6 sm:grid-cols-2">
-                <div><div className="text-[13px] font-semibold text-vlm">Vision model</div><div className="font-reading text-lg">Meera Iyer</div></div>
-                <div><div className="text-[13px] font-semibold text-ocr-text">OCR + text model</div><div className="font-reading text-lg">Meera <mark className="rounded bg-bad-soft px-1 text-bad-text">lyer</mark></div></div>
-                <p className="text-sm text-ink-soft sm:col-span-2">Looking closer reads “Meera Iyer”: the vision answer is confirmed. <span className="text-muted">From a real run on an 8-page report.</span></p>
+                <div><div className="text-[13px] font-semibold text-vlm">Vision model</div><div className="font-reading text-lg">12000 pallets</div></div>
+                <div><div className="text-[13px] font-semibold text-ocr-text">OCR + text model</div><div className="font-reading text-lg">12<mark className="rounded bg-bad-soft px-1 text-bad-text">oo</mark>0 pallets</div></div>
+                <p className="text-sm text-ink-soft sm:col-span-2">OCR misread two zeros as the letter o. Looking closer re-reads just that spot to settle which answer the page supports. <span className="text-muted">Illustration based on a real RapidOCR misread of the sample report.</span></p>
               </figcaption>
             </figure>
           </Reveal>

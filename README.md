@@ -92,7 +92,7 @@ To keep a copy outside the database:
 For short factual answers (a summary has no single place on the page), each answer gets a **Where the answer came from** card:
 - **Evidence on the page.** The vision model is asked where it read the answer (Qwen2.5-VL grounding; with several pages it first picks the page, then marks the region on that page alone). OCR's evidence is the OCR lines holding the answer's words. For PDFs with embedded text, a dashed box marks where the document itself prints the answer.
 - **Evidence agreement.** Did both methods look at the same place?
-- **Look closer.** When the answers differ, the region is enlarged and the vision model transcribes it; only the disputed words are compared ("Meera lyer" vs "Meera Iyer").
+- **Look closer.** When the answers differ, the region is enlarged and the vision model transcribes it; only the disputed words are compared ("12oo0" vs "12000").
 - **Faithfulness.** The evidence is removed (masked in the image, deleted from the OCR text) and the question asked again. If the answer survives, the highlight was not what it relied on.
 - **Trust.** A transparent score from these signals, listed as reasons under the verdict (High / Medium / Low). It is a rule, not a learned model; experiments measure whether it predicts wrong answers (AUROC and accuracy of the most-trusted answers, on the Experiments page).
 

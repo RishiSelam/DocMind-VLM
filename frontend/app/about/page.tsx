@@ -46,7 +46,7 @@ export default function About() {
 
         <Section title="Reading the verdict">
           <p><strong className="font-semibold text-ink">“Answers match”</strong> means the two independent readings agree. That is strong evidence, but not proof.</p>
-          <p><strong className="font-semibold text-ink">“Found in the document”</strong> is the share of an answer's key words and numbers that are printed in the PDF's own embedded text, which neither method produced. A misreading such as “Meera lyer” for “Meera Iyer” does not count as found.</p>
+          <p><strong className="font-semibold text-ink">“Found in the document”</strong> is the share of an answer's key words and numbers that are printed in the PDF's own embedded text, which neither method produced. A misreading such as “12oo0” for “12000” does not count as found.</p>
           <p>Scans and photos have no embedded text, so their answers cannot be checked this way; the verdict says so instead of guessing. None of this proves an answer is <em>correct</em>: a value can be printed in the document and still be the wrong one for the question.</p>
         </Section>
 
