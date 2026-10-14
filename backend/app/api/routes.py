@@ -18,9 +18,9 @@ from ..eval.docvqa import list_datasets
 from ..schemas import AskRequest, ConversationCreate, ExperimentCreate
 from ..services import audit as auditsvc
 from ..services import history as historysvc
-from ..services import monitoring, ocr as ocrsvc, pdf as pdfsvc
+from ..services import diagnosis, monitoring, ocr as ocrsvc, pdf as pdfsvc
 from ..services.models import hub
-from ..services.pipelines import _retrieval_corpus, answer_config, run_ask
+from ..services.pipelines import _retrieval_corpus, add_analysis, answer_config, run_ask
 from ..services.retrieval import rank_pages
 
 log = logging.getLogger("docmind.api")
@@ -195,7 +195,9 @@ def conversation(cid: str) -> Dict[str, Any]:
     conv = db.get_conversation(cid)
     if not conv:
         raise HTTPException(404, "Conversation not found")
-    return {**conv, "messages": db.list_messages(cid)}
+    doc = db.get_document(conv["doc_id"]) if conv.get("doc_id") else None
+    msgs = [{**m, "payload": add_analysis(m["payload"], doc)} if m["role"] == "assistant" else m for m in db.list_messages(cid)]
+    return {**conv, "messages": msgs}
 
 
 @router.delete("/conversations/{cid}")
@@ -288,7 +290,7 @@ def ask(req: AskRequest) -> Dict[str, Any]:
     # A follow-up depends on the conversation so far, so only an opening question can reuse a saved answer.
     prev = _reusable_answer(doc, req) if (req.reuse and not hv and not ho) else None
     if prev:
-        result = {**prev["answer"]["payload"], "reused_from": {
+        result = {**add_analysis(prev["answer"]["payload"], doc), "reused_from": {
             "message_id": prev["answer"]["id"], "conversation_id": prev["answer"]["conversation_id"],
             "asked_at": prev["question"]["created_at"]}}
     else:
@@ -328,7 +330,9 @@ def experiment(exp_id: str) -> Dict[str, Any]:
     exp = db.get_experiment(exp_id)
     if not exp:
         raise HTTPException(404, "Experiment not found")
-    return {**exp, "items": db.list_experiment_items(exp_id)}
+    items = runner.with_diagnosis(exp, db.list_experiment_items(exp_id))
+    usable = [i for i in items if i["vlm_scores"] and i["ocr_scores"]]
+    return {**exp, "metrics": {**(exp.get("metrics") or {}), "diagnosis": diagnosis.diagnose_run(usable)}, "items": items}
 
 
 @router.post("/experiments/{exp_id}/resume")
@@ -355,15 +359,13 @@ def delete_experiment(exp_id: str) -> Dict[str, str]:
 
 @router.get("/experiments/{exp_id}/csv")
 def experiment_csv(exp_id: str) -> PlainTextResponse:
-    if not db.get_experiment(exp_id):
+    exp = db.get_experiment(exp_id)
+    if not exp:
         raise HTTPException(404, "Experiment not found")
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["qid", "question", "gold", "vlm_pred", "ocr_pred", "vlm_em", "vlm_anls", "ocr_em", "ocr_anls",
-                "vlm_ms", "ocr_ms", "answer_in_ocr", "pipelines_agree"])
-    for it in db.list_experiment_items(exp_id):
-        w.writerow([it["qid"], it["question"], json.dumps(it["gold"]), it["vlm_pred"], it["ocr_pred"],
-                    it["vlm_scores"].get("em"), it["vlm_scores"].get("anls"), it["ocr_scores"].get("em"),
-                    it["ocr_scores"].get("anls"), it["vlm_ms"], it["ocr_ms"], it["answer_in_ocr"], it["agree"]])
+    w.writerow(runner.CSV_HEADER)
+    for it in runner.with_diagnosis(exp, db.list_experiment_items(exp_id)):
+        w.writerow(runner.csv_row(it))
     return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                              headers={"Content-Disposition": f'attachment; filename="{exp_id}.csv"'})

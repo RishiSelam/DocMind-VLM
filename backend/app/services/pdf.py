@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path
-from typing import BinaryIO, Dict, Tuple
+from typing import Any, BinaryIO, Dict, List, Tuple
 
 import pymupdf as fitz  # PyMuPDF
 from PIL import Image
@@ -113,3 +113,26 @@ def page_features(path: str | Path, page: int) -> Dict[str, float]:
             "n_drawings": n_draw,
             "n_tables": n_tables,
         }
+
+
+def region_kinds(path: str | Path, page: int) -> List[Dict[str, Any]]:
+    """Tables and embedded images on a PDF page, as {"kind", "box"} with the box as fractions of the page."""
+    if is_image_path(path):
+        return []
+    out: List[Dict[str, Any]] = []
+    with fitz.open(str(path)) as d:
+        p = d[page]
+        W, H = max(p.rect.width, 1.0), max(p.rect.height, 1.0)
+        norm = lambda r: [round(r[0] / W, 4), round(r[1] / H, 4), round(r[2] / W, 4), round(r[3] / H, 4)]  # noqa: E731
+        try:
+            for im in p.get_images(full=True):
+                for r in p.get_image_rects(im[0]):
+                    out.append({"kind": "image", "box": norm(r)})
+        except Exception:
+            pass
+        try:
+            for t in p.find_tables().tables:
+                out.append({"kind": "table", "box": norm(t.bbox)})
+        except Exception:
+            pass
+    return out

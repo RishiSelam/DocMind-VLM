@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import MetricsPanel from "@/components/MetricsPanel";
 import { api, pct, secs } from "@/lib/api";
+import { CAUSE, GOOD, causeTone } from "@/lib/causes";
 import type { Dataset, ExpItem, Experiment, SystemMetrics } from "@/lib/types";
 
 type Filter = "all" | "disagree" | "vlm_only" | "ocr_only" | "ocr_missing";
@@ -17,6 +18,15 @@ function keep(it: ExpItem, f: Filter) {
 }
 const badge = (s: { anls?: number; contains?: number }) => (s.contains === 1 ? "text-agree-text" : (s.anls ?? 0) > 0 ? "text-warn-text" : "text-bad-text");
 const mark = (s: { anls?: number; contains?: number }) => (s.contains === 1 ? "✓ " : (s.anls ?? 0) > 0 ? "≈ " : "✗ ");
+const BETTER: Record<string, { t: string; c: string }> = {
+  vlm: { t: "Vision", c: "bg-vlm-soft text-vlm" }, ocr: { t: "OCR", c: "bg-ocr-soft text-ocr-text" },
+  both: { t: "Both right", c: "bg-agree-soft text-agree-text" }, neither: { t: "Both wrong", c: "bg-bad-soft text-bad-text" },
+};
+const causeOf = (i: ExpItem, s: "vlm" | "ocr") => i.extra?.diagnosis?.[s]?.cause;
+function CauseChip({ c }: { c?: string }) {
+  if (!c || c === "correct") return null;
+  return <span className={`mt-1 inline-block rounded px-1.5 py-px text-xs ${causeTone(c)}`}>{CAUSE[c] ?? c}</span>;
+}
 const STATUS: Record<string, string> = { finished: "bg-agree-soft text-agree-text", failed: "bg-bad-soft text-bad-text", running: "bg-warn-soft text-warn-text", queued: "bg-bench text-ink" };
 
 export default function Research() {
@@ -26,6 +36,7 @@ export default function Research() {
   const [sys, setSys] = useState<SystemMetrics | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [cause, setCause] = useState("");
   const [form, setForm] = useState({ name: "", dataset: "", limit: "", mode: "both", notes: "" });
   const [busy, setBusy] = useState(false);
 
@@ -38,7 +49,7 @@ export default function Research() {
   }, []);
   useEffect(() => { void load(); }, [load]);
 
-  const openExp = useCallback(async (id: string) => { try { setSel(await api.experiment(id)); setFilter("all"); } catch (x: any) { setErr(x.message); } }, []);
+  const openExp = useCallback(async (id: string) => { try { setSel(await api.experiment(id)); setFilter("all"); setCause(""); } catch (x: any) { setErr(x.message); } }, []);
 
   // poll while anything is queued/running
   useEffect(() => {
@@ -57,7 +68,12 @@ export default function Research() {
   }
   async function act(fn: () => Promise<unknown>) { try { await fn(); await load(); if (sel) await openExp(sel.id).catch(() => setSel(null)); } catch (x: any) { setErr(x.message); } }
 
-  const items = useMemo(() => (sel?.items ?? []).filter((i) => keep(i, filter)), [sel, filter]);
+  const items = useMemo(() => (sel?.items ?? []).filter((i) => keep(i, filter) && (!cause || causeOf(i, "vlm") === cause || causeOf(i, "ocr") === cause)), [sel, filter, cause]);
+  const causes = useMemo(() => {
+    const n: Record<string, number> = {};
+    for (const i of sel?.items ?? []) for (const s of ["vlm", "ocr"] as const) { const c = causeOf(i, s); if (c && !GOOD.has(c)) n[c] = (n[c] ?? 0) + 1; }
+    return Object.entries(n).sort((a, b) => b[1] - a[1]);
+  }, [sel]);
   const c = sel?.config ?? {};
 
   const count = (f: Filter) => (sel?.items ?? []).filter((i) => keep(i, f)).length;
@@ -157,30 +173,59 @@ export default function Research() {
                     <button key={k} onClick={() => setFilter(k)} aria-pressed={filter === k}
                       className={`h-9 rounded-full px-3.5 text-sm ${filter === k ? "bg-primary text-on-primary" : "border border-rule bg-paper hover:border-ink"}`}>{name} · {count(k)}</button>
                   ))}
+                  {causes.length > 0 && (
+                    <label className="ml-auto flex items-center gap-2 text-sm text-muted">Why wrong
+                      <select className="field h-9 !py-0 text-ink" value={cause} onChange={(e) => setCause(e.target.value)}>
+                        <option value="">Any reason</option>
+                        {causes.map(([c, n]) => <option key={c} value={c}>{CAUSE[c] ?? c} · {n}</option>)}
+                      </select>
+                    </label>
+                  )}
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[46rem] border-collapse text-left text-sm">
-                    <thead className="text-[13px] text-muted"><tr><th className="py-1.5 font-medium">Question</th><th className="font-medium">Correct answer</th><th className="font-medium text-vlm">Vision</th><th className="font-medium text-ocr-text">OCR + text</th><th className="font-medium">In OCR text?</th></tr></thead>
+                  <table className="w-full min-w-[56rem] border-collapse text-left text-sm">
+                    <thead className="text-[13px] text-muted"><tr><th className="py-1.5 font-medium">Question</th><th className="font-medium">Correct answer</th><th className="font-medium text-vlm">Vision</th><th className="font-medium text-ocr-text">OCR + text</th><th className="font-medium">Better, and why</th></tr></thead>
                     <tbody>
                       {items.map((i) => (
                         <tr key={i.idx} className="border-t border-hair align-top">
                           <td className="max-w-[16rem] py-2.5 pr-3">{i.question}</td>
                           <td className="pr-3 font-reading">{i.gold.join(" / ")}</td>
-                          <td className={`pr-3 ${badge(i.vlm_scores)}`}>{mark(i.vlm_scores)}{i.vlm_pred ?? "(no answer)"}<div className="font-mono text-xs text-muted">{secs(i.vlm_ms)}</div></td>
-                          <td className={`pr-3 ${badge(i.ocr_scores)}`}>{mark(i.ocr_scores)}{i.ocr_pred ?? "(no answer)"}<div className="font-mono text-xs text-muted">{secs(i.ocr_ms)}</div></td>
-                          <td>{i.answer_in_ocr == null ? "n/a" : i.answer_in_ocr ? "yes" : <span className="text-bad-text">no</span>}</td>
+                          <td className={`max-w-[15rem] break-words pr-3 ${badge(i.vlm_scores)}`}>{mark(i.vlm_scores)}{i.vlm_pred ?? "(no answer)"}<div><CauseChip c={causeOf(i, "vlm")} /></div><div className="font-mono text-xs text-muted">{secs(i.vlm_ms)}</div></td>
+                          <td className={`max-w-[15rem] break-words pr-3 ${badge(i.ocr_scores)}`}>{mark(i.ocr_scores)}{i.ocr_pred ?? "(no answer)"}<div><CauseChip c={causeOf(i, "ocr")} /></div><div className="font-mono text-xs text-muted">{secs(i.ocr_ms)}</div></td>
+                          <td className="min-w-[15rem] max-w-[22rem]"><Why i={i} /></td>
                         </tr>
                       ))}
                       {items.length === 0 && <tr><td colSpan={5} className="py-3 text-muted">No questions match this filter.</td></tr>}
                     </tbody>
                   </table>
                 </div>
-                <p className="text-[13px] text-muted">✓ contains the correct answer · ≈ partly matches · ✗ no match. Showing {items.length} of {sel.items?.length ?? 0}.</p>
+                <p className="text-[13px] text-muted">✓ contains the correct answer · ≈ partly matches · ✗ no match. The chip under an answer names why it went wrong; open “why” for the evidence. Showing {items.length} of {sel.items?.length ?? 0}.</p>
               </section>
             </>
           )}
         </div>
       </main>
+    </div>
+  );
+}
+
+/** Who did better on one question, where on the page the answer is, and the cause behind each wrong answer. */
+function Why({ i }: { i: ExpItem }) {
+  const d = i.extra?.diagnosis;
+  if (!d) return <span className="text-muted">n/a</span>;
+  const b = BETTER[d.better];
+  const lines = (["vlm", "ocr"] as const).map((s) => [s, d[s]] as const).filter(([, x]) => x && x.text);
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="flex flex-wrap items-center gap-1.5"><span className={`chip whitespace-nowrap font-medium ${b.c}`}>{b.t}</span><span className="text-xs text-muted">answer {d.bucket}{d.region ? ` · ${d.region.layout === "table" ? "table row" : d.region.layout === "form" ? "label and value" : "text line"}` : ""}</span></span>
+      {lines.length > 0 && (
+        <details className="text-[13px]">
+          <summary className="cursor-pointer text-muted hover:underline">why</summary>
+          <div className="mt-1 flex flex-col gap-1.5 text-ink-soft">
+            {lines.map(([s, x]) => <p key={s}><strong className={s === "vlm" ? "text-vlm" : "text-ocr-text"}>{s === "vlm" ? "Vision" : "OCR"}:</strong> {x!.text}</p>)}
+          </div>
+        </details>
+      )}
     </div>
   );
 }

@@ -17,9 +17,10 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+from .. import db
 from ..config import get_settings
 from . import audit as auditsvc
-from . import evidence, explain, monitoring, ocr as ocrsvc, pdf as pdfsvc, verification
+from . import diagnosis, evidence, explain, monitoring, ocr as ocrsvc, pdf as pdfsvc, verification
 from .models import hub
 from .prompts import NOT_FOUND
 from .retrieval import rank_pages, select_pages
@@ -34,6 +35,61 @@ def _usable_text_layers(doc: Dict[str, Any]) -> Optional[Dict[int, str]]:
     if layers and sum(1 for t in layers.values() if len(t) > 20) >= 0.5 * doc["n_pages"]:
         return layers
     return None
+
+
+def add_analysis(payload: Dict[str, Any], doc: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Answers saved before the analysis existed get one from the cached OCR and the PDF's own text. No model is run,
+    nothing is saved, and the answer is returned unchanged if that is not possible."""
+    if not doc or not payload.get("ocr"):
+        return payload
+    cached = None
+    if not payload["ocr"].get("ocr_text"):
+        try:
+            cached = db.get_ocr_pages(doc["id"], ocrsvc.cache_key())
+            used_pages = [p - 1 for p in payload["ocr"].get("pages") or [] if p - 1 in cached]
+            if not used_pages:
+                used_pages = sorted(cached.keys())
+            if used_pages:
+                payload["ocr"]["ocr_text"] = "\n".join(f"--- Page {p + 1} ---\n{cached[p]['text']}" for p in sorted(used_pages))
+        except Exception as e:  # noqa: BLE001
+            log.debug("could not attach ocr_text in add_analysis: %s", e)
+    if payload.get("vlm") and payload.get("ocr") and not payload.get("combined_summary"):
+        va = (payload.get("vlm") or {}).get("answer")
+        oa = (payload.get("ocr") or {}).get("answer")
+        if va and oa:
+            try:
+                payload["combined_summary"] = synthesize_summary(
+                    payload.get("question", ""),
+                    va, oa,
+                    payload.get("verification"),
+                    payload.get("analysis"),
+                    model=None,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.debug("could not attach combined_summary in add_analysis: %s", e)
+    if "analysis" in payload or not payload.get("vlm"):
+        return payload
+    try:
+        if cached is None:
+            cached = db.get_ocr_pages(doc["id"], ocrsvc.cache_key())
+        used = {p - 1: cached[p - 1] for p in payload["ocr"].get("pages") or [] if p - 1 in cached}
+        if not used:
+            return payload
+        layers = _usable_text_layers(doc)
+        reference = "\n".join(layers.values()) if layers else None
+        dpi = get_settings().ocr_render_dpi
+        analyzed = diagnosis.analyze(payload, used, reference, lambda p: pdfsvc.region_kinds(doc["path"], p),
+                                     lambda p: evidence.page_px_size(doc["path"], p, dpi))
+        out_payload = {**payload, "analysis": analyzed}
+        if not out_payload.get("combined_summary") and va and oa:
+            out_payload["combined_summary"] = synthesize_summary(
+                payload.get("question", ""), va, oa,
+                payload.get("verification"), analyzed, model=None
+            )
+        return out_payload
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not add an analysis to a saved answer: %s", e)
+        return payload
 
 
 def _retrieval_corpus(doc: Dict[str, Any]) -> Tuple[Dict[int, str], str]:
@@ -114,6 +170,99 @@ def merge_parts(model: Any, question: str, partials: List[Tuple[str, str]], hist
     if len(found) == 1:
         return found[0][1], False
     return model.combine(question, found, history, short), True
+
+def synthesize_summary(
+    question: str,
+    vlm_ans: Optional[str],
+    ocr_ans: Optional[str],
+    verification_res: Optional[Dict[str, Any]] = None,
+    analysis_res: Optional[Dict[str, Any]] = None,
+    model: Any = None,
+) -> Dict[str, Any]:
+    """Generates a unified summary containing the information from both the VLM and OCR pipelines."""
+    v_ans = (vlm_ans or "").strip()
+    o_ans = (ocr_ans or "").strip()
+    if not v_ans and not o_ans:
+        return {"summary": "No information returned by either method."}
+    if not v_ans:
+        return {"summary": f"Information extracted by OCR pipeline: {o_ans}", "ocr_unique": [o_ans]}
+    if not o_ans:
+        return {"summary": f"Information extracted by Vision model: {v_ans}", "vlm_unique": [v_ans]}
+
+    v_nf = verification.is_not_found(v_ans)
+    o_nf = verification.is_not_found(o_ans)
+
+    if v_nf and o_nf:
+        return {
+            "summary": "Both methods agree that this information is not found in the document.",
+            "consensus": ["Not found in document."],
+        }
+    if v_nf and not o_nf:
+        return {
+            "summary": f"The OCR pipeline extracted: \"{o_ans}\". (The vision model did not find it in the inspected pages).",
+            "ocr_unique": [o_ans],
+        }
+    if o_nf and not v_nf:
+        return {
+            "summary": f"The Vision model extracted: \"{v_ans}\". (The OCR text did not contain this information, likely due to layout or visual formatting).",
+            "vlm_unique": [v_ans],
+        }
+
+    pairs = (verification_res or {}).get("pairs") or []
+    consensus = [p["vlm"] for p in pairs if p.get("label") == "agree" and p.get("vlm")]
+    vlm_unique = [p["vlm"] for p in pairs if p.get("label") == "only_vlm" and p.get("vlm")]
+    ocr_unique = [p["ocr"] for p in pairs if p.get("label") == "only_ocr" and p.get("ocr")]
+    discrepancies = [f"Vision reported '{p['vlm']}' while OCR reported '{p['ocr']}'" for p in pairs if p.get("label") == "conflict"]
+
+    llm_summary = None
+    if model is not None and hasattr(model, "generate") and getattr(model, "name", "") != "demo-llm":
+        try:
+            synth_ctx = (
+                f"Question about the document: {question}\n\n"
+                f"Vision Model Answer:\n{v_ans}\n\n"
+                f"OCR + Text Pipeline Answer:\n{o_ans}\n\n"
+                "Write a clear, comprehensive summary that combines the information from BOTH answers into a single unified response. "
+                "Preserve all facts, figures, numbers, dates, and names mentioned in either answer. "
+                "If both agree, state the verified fact. If they provide complementary details, synthesize them together. "
+                "If they conflict on a value, mention both clearly."
+            )
+            llm_summary = model.generate(synth_ctx, question, history=[], short=False)
+            if verification.is_not_found(llm_summary) or len(llm_summary.strip()) < 5:
+                llm_summary = None
+        except Exception as e:  # noqa: BLE001
+            log.warning("LLM summary synthesis error: %s", e)
+
+    verdict = (verification_res or {}).get("verdict")
+    better = (analysis_res or {}).get("better")
+
+    if not llm_summary:
+        if verdict == "consistent" or v_ans.lower() == o_ans.lower():
+            llm_summary = (
+                f"**Consensus Finding:** {v_ans}\n\n"
+                "Both the Vision Language Model (analyzing the page image directly) and the OCR text pipeline "
+                "confirm this information, providing strong cross-modal verification."
+            )
+        else:
+            bullets = [
+                f"- **Vision Model Findings:** {v_ans}",
+                f"- **OCR Pipeline Findings:** {o_ans}",
+            ]
+            if better == "vlm":
+                bullets.append("*Synthesis Note:* The Vision model provides the better-supported reading of the page image.")
+            elif better == "ocr":
+                bullets.append("*Synthesis Note:* The OCR pipeline provides the better-supported textual match.")
+            if discrepancies:
+                bullets.append(f"*Discrepancies Noted:* {'; '.join(discrepancies)}.")
+
+            llm_summary = "\n".join(bullets)
+
+    return {
+        "summary": llm_summary,
+        "consensus": consensus,
+        "vlm_unique": vlm_unique,
+        "ocr_unique": ocr_unique,
+        "discrepancies": discrepancies,
+    }
 
 
 def answer_config() -> Dict[str, Any]:
@@ -203,7 +352,7 @@ def run_ask(
     ocr_used: Dict[int, Dict[str, Any]] = {}  # OCR pages with their boxes, for locating the OCR answer's evidence
     if want_ocr:
         out = {"answer": None, "pages": [], "ms": 0.0, "ocr_ms": 0.0, "llm_ms": 0.0, "engine": ocrsvc.cache_key(),
-               "context_chars": 0, "truncated": False, "error": None, "batches": [], "combined": False}
+               "context_chars": 0, "truncated": False, "error": None, "batches": [], "combined": False, "ocr_text": None}
         try:
             if hub.llm is None:
                 raise RuntimeError("LLM is disabled (ENABLE_LLM=false).")
@@ -222,7 +371,8 @@ def run_ask(
                 chunks = [(ctx, used)]
             used_pages = sorted({p for _, ps in chunks for p in ps})
             context = "\n".join(c for c, _ in chunks)
-            out.update(pages=[p + 1 for p in used_pages], truncated=truncated, context_chars=len(context))
+            out.update(pages=[p + 1 for p in used_pages], truncated=truncated, context_chars=len(context),
+                       ocr_text=context or ocr_full_text)
             partials = []
             for ctx, ps in chunks:
                 t2 = time.perf_counter()
@@ -270,6 +420,21 @@ def run_ask(
                          "ocr_wall_ms": round(ocr_wall_ms, 1), "llm_ms": round(llm_ms, 1), "xai_ms": round(xai_ms, 1),
                          "total_ms": round(total_ms, 1)}
     result["explanation"] = explain.explain(result, ocr_full_text, reference)
+    if v and o and ocr_used:
+        try:
+            result["analysis"] = diagnosis.analyze(result, ocr_used, reference, lambda p: pdfsvc.region_kinds(path, p),
+                                                   lambda p: evidence.page_px_size(path, p, s.ocr_render_dpi))
+        except Exception as e:  # noqa: BLE001
+            log.warning("diagnosis failed: %s", e)
+    if v and o and v.get("answer") is not None and o.get("answer") is not None:
+        try:
+            result["combined_summary"] = synthesize_summary(
+                question, v.get("answer"), o.get("answer"),
+                result.get("verification"), result.get("analysis"),
+                model=hub.llm if (not hub.demo and hub.llm) else None,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("synthesis failed: %s", e)
     monitoring.record({**result["timings"], "mode": mode, "doc": doc["id"], "pages": n})
     if return_context:
         result["_ocr_context"] = context

@@ -4,13 +4,17 @@ Ask a document a question two ways and see where the answers differ.
 
 - **Vision pipeline:** page images go to Qwen2.5-VL-7B-Instruct.
 - **OCR pipeline:** OCR text goes to Qwen2.5-7B-Instruct. OCR is RapidOCR by default (Paddle-family models on ONNX Runtime, so no `paddlepaddle` install).
-- **Verification:** the two answers are compared claim by claim, the vision answer is checked against the OCR text, and each page gets an OCR audit.
+- **Three-Section Output Architecture:**
+  1. **Section 1 · VLM:** Direct multimodal visual reading, visual evidence crops, coordinates, and faithfulness testing.
+  2. **Section 2 · OCR Text:** OCR model answer, complete latency split, and an interactive **Extracted OCR Text Viewer** displaying raw extracted text with page headers and keyword highlights.
+  3. **Section 3 · Combined Output & Explainability:** A **Unified Combined Summary** merging the information from both methods into a single coherent answer, accompanied by side-by-side contrast cards, causal diagnostic analysis, look-closer verification, and comparative performance charts.
+- **Verification & Diagnosis:** Answers are verified claim by claim, audited for OCR text loss, and evaluated across root cause taxonomies (glyph misreads, layout flattening, LLM repairs).
 - **Evaluation:** DocVQA-style runs with EM, ANLS, paired bootstrap, McNemar, and an OCR answer-coverage ceiling. Runs are saved after every question and can be resumed.
 
 ```
 docmind/
   backend/    FastAPI + SQLite (app/, scripts/, tests/)
-  frontend/   Next.js 14 + Tailwind (Workbench at /, Research at /research)
+  frontend/   Next.js 14 + Tailwind (Workbench at /ask, Research at /research, History at /history)
   data/       uploads, sqlite file, eval sets, sample PDF
   .env.example
 ```
@@ -46,16 +50,24 @@ cd docmind/frontend
 npm install
 npm run dev
 ```
-Open http://localhost:3000, upload `data/samples/annual_report.pdf`, and ask "What is the warehouse capacity?". Switch to **Research** in the top right for the claim table, page-retrieval bars, OCR audit and timings.
+Open http://localhost:3000, upload `data/samples/annual_report.pdf`, and ask "What is the warehouse capacity?". Switch to **Detailed** view (or Research at `/research`) for the claim ledger, page-retrieval bars, OCR audit and timings.
 
-Under every answer, a comparison panel charts the two methods side by side (answer found in the document's own text, share of the document read, OCR text similarity, time) and explains the result in plain words. It only names a better-supported answer when the PDF has an embedded text layer to check against; for scans and images it says the answers cannot be checked. It measures grounding, not correctness: for accuracy, run an experiment under Research.
+Under every question, outputs are organized into three dedicated sections:
+- **Section 1 (VLM Output):** Multimodal answer, visual attention coordinates on the page image, high-resolution crop inspection, and counterfactual faithfulness verification.
+- **Section 2 (OCR Text Output):** OCR pipeline answer, latency breakdown (OCR extraction vs text LLM), and the **Extracted OCR Text Viewer** showing the exact text extracted by RapidOCR with page demarcations and matching keyword highlights.
+- **Section 3 (Combined Output & Explainability):**
+  - **Unified Combined Summary:** An intelligent synthesis merging all information, figures, and details extracted by both methods into one complete answer.
+  - **Verdict & Recommendation:** Recommended answer and transparent rule-based trust score (High / Medium / Low).
+  - **Side-by-Side Comparison:** Direct contrast cards highlighting word-level differences.
+  - **Causal Diagnosis & Look-Closer:** Explains why one method did better (misread glyphs, dropped tokens, repaired text), accompanied by zoomed crop inspection and word-by-word truth tables.
+  - **Comparative Charts:** Grounding support %, document read coverage %, OCR text similarity %, and latency breakdown.
 
 Same check without the UI (from the repo root):
 ```bash
 curl -F file=@data/samples/annual_report.pdf localhost:8000/api/documents     # returns {"id": "doc_...", "n_pages": 6, ...}
 curl -H 'Content-Type: application/json' -d '{"doc_id":"doc_...","question":"What is the warehouse capacity?"}' localhost:8000/api/ask
 ```
-`/api/ask` returns `{conversation_id, user_message, assistant_message}`. The results are in `assistant_message.payload`: `demo`, `vlm.answer`, `ocr.answer`, `verification.verdict`, `timings`.
+`/api/ask` returns `{conversation_id, user_message, assistant_message}`. The results are in `assistant_message.payload`: `vlm`, `ocr`, `combined_summary`, `verification`, `scorecard`, `timings`.
 
 ## 2. Real models on the GPU workstation
 
@@ -97,6 +109,15 @@ For short factual answers (a summary has no single place on the page), each answ
 - **Trust.** A transparent score from these signals, listed as reasons under the verdict (High / Medium / Low). It is a rule, not a learned model; experiments measure whether it predicts wrong answers (AUROC and accuracy of the most-trusted answers, on the Experiments page).
 
 This adds about 4–10 s per short question. Turn parts off with `EXPLAIN`, `LOOK_CLOSER`, `FAITHFULNESS` in `.env`.
+
+### Which method did better, and why
+
+Every answer, and every question in an experiment, says which method did better, the cause behind the other one's failure, and which part of the page it happened on (`backend/app/services/diagnosis.py`):
+- **Causes.** Misread characters ("lyer" for "Iyer", with the look-alike characters named), words run together ("SEPTEMBER17,1969"), answer never reached the OCR text (handwriting, figures, photos), picked another value printed on the page (tables and forms lose their row/column structure in OCR text), said not found, only part of the answer, not printed on the page. Each comes with the mechanism that produces it, not just the score.
+- **Part of the page.** For a question: the OCR line holding the answer, cropped from the page, with what the vision model, OCR's text and the OCR pipeline's answer made of each word. For an experiment: accuracy split by how OCR read the answer's place (clearly, low confidence, with errors, not at all), by the layout around it (table row, label and value, running text) and by DocVQA question type, with each method's main failure.
+- **Judge.** In experiments, the correct answers. For a single question, the PDF's own text, or the closer look's re-reading on scans; with neither, the analysis names what the difference looks like but does not pick a side.
+
+Causes are assigned by fixed rules and are the most likely mechanism, not a proof. Older runs and saved answers get the analysis when opened, from the cached OCR; no model is re-run. Experiment CSVs have `better`, `vlm_cause`, `ocr_cause`, `answer_region` and the explanations.
 
 ### The website
 
@@ -142,7 +163,7 @@ Dataset format is JSONL: `{"qid","question","answers":[...],"image":"images/x.pn
 
 ```bash
 cd backend && pip install -r requirements-dev.txt    # pytest + httpx are not in requirements.txt
-python -m pytest                        # 56 tests, ~30-45 s (real OCR runs inside them); always runs in demo mode
+python -m pytest                        # 101 tests, ~60 s (real OCR runs inside them); always runs in demo mode
 cd frontend && npm run lint && npm run build
 ```
 
@@ -164,4 +185,4 @@ Uploads stream to disk in 1 MiB chunks; there is no size limit.
 
 ## 7. Not verified
 
-Verified since: real Qwen inference on an RTX A4000 (see `RUN_REPORT.md`), `prepare_docvqa.py` reading the local cache, and the UI in headless Chrome at desktop and phone width, light and dark. Still not verified: the Docling and PaddleOCR engines, and the UI on browsers other than Chrome. N
+Verified since: real Qwen inference on an RTX A4000 (see `RUN_REPORT.md`), `prepare_docvqa.py` reading the local cache, and the UI in headless Chrome at desktop and phone width, light and dark. Still not verified: the Docling and PaddleOCR engines, and the UI on browsers other than Chrome.

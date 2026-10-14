@@ -1,5 +1,6 @@
 import { pct, secs } from "@/lib/api";
-import type { Experiment, Metrics } from "@/lib/types";
+import { CAUSE } from "@/lib/causes";
+import type { Experiment, GroupStats, Metrics, RunDiagnosis } from "@/lib/types";
 import BarChart, { COLORS, type Group } from "./BarChart";
 
 const LEGEND = [{ name: "Vision model", color: COLORS.vlm }, { name: "OCR + text model", color: COLORS.ocr }];
@@ -14,8 +15,9 @@ function pair(name: string, v: number, o: number, fmt: (x: number) => string, sc
 /** Plain-language reading of an experiment's numbers. */
 function interpret(m: Required<Pick<Metrics, "vlm" | "ocr" | "n">> & Metrics, winner: "vlm" | "ocr" | "none" | null): [string, string][] {
   const out: [string, string][] = [];
+  const causal = !!m.diagnosis;   // with causes available, the accuracy lines would only repeat the verdict
   const gap = (m.vlm.anls - m.ocr.anls) * 100;
-  out.push(["Accuracy", Math.abs(gap) < 0.05
+  if (!causal) out.push(["Accuracy", Math.abs(gap) < 0.05
     ? `Both pipelines scored the same: ${pct(m.vlm.anls)} ANLS and ${pct(m.vlm.em)} vs ${pct(m.ocr.em)} exact match on ${m.n} questions.`
     : `The ${gap > 0 ? "vision model" : "OCR pipeline"} scored ${Math.abs(gap).toFixed(1)} points higher on ANLS (${pct(m.vlm.anls)} vs ${pct(m.ocr.anls)}). ${
       winner === "none" ? "With this many questions the gap could be chance; add questions before relying on it." : "The gap is larger than chance would explain on this sample."}`]);
@@ -30,7 +32,7 @@ function interpret(m: Required<Pick<Metrics, "vlm" | "ocr" | "n">> & Metrics, wi
   let bottom = `On this set ${acc}, and the ${fast} is faster.`;
   if (m.ocr_answer_coverage != null && m.ocr_answer_coverage > 0.97)
     bottom += " The set is easy for OCR (it captured nearly every answer), so it cannot show where vision reading helps. Test on scans, tables or charts to separate them.";
-  out.push(["Bottom line", bottom]);
+  if (!causal) out.push(["Bottom line", bottom]);
   return out;
 }
 
@@ -56,6 +58,8 @@ export default function MetricsPanel({ exp }: { exp: Experiment }) {
   const text = winner === "none" || !winner
     ? `ANLS: vision ${pct(m.vlm.anls)}, OCR ${pct(m.ocr.anls)}. ${d && d.diff === 0 ? "Both scored exactly the same." : "The difference could be chance at this sample size."} The ${faster} was faster (${secs(Math.min(m.vlm.latency_ms.mean, m.ocr.latency_ms.mean))} vs ${secs(Math.max(m.vlm.latency_ms.mean, m.ocr.latency_ms.mean))} per question).`
     : `ANLS: vision ${pct(m.vlm.anls)}, OCR ${pct(m.ocr.anls)}. The 95% interval on the difference excludes zero, so the gap is larger than chance on this sample.`;
+  const dx = m.diagnosis;
+  const why = dx && (winner === "vlm" || winner === "ocr") ? dx.explanation.find((e) => e.title.startsWith(`Why the ${winner === "vlm" ? "vision model" : "OCR pipeline"} won`))?.text.split("; ")[0].replace(/\.?$/, ". The full breakdown is under “Why one method did better”.") : undefined;
   const tone = winner === "vlm" ? "bg-vlm-soft text-vlm" : winner === "ocr" ? "bg-ocr-soft text-ocr" : "bg-bench text-ink";
 
   return (
@@ -67,6 +71,7 @@ export default function MetricsPanel({ exp }: { exp: Experiment }) {
         <div className="flex flex-col gap-1.5">
           <h2 className="text-xl font-semibold">{title}</h2>
           <p className="text-ink-soft">{text}</p>
+          {why && <p className="text-ink-soft"><strong className="font-semibold text-ink">Why: </strong>{why}</p>}
         </div>
       </section>
 
@@ -81,11 +86,12 @@ export default function MetricsPanel({ exp }: { exp: Experiment }) {
           caption="Shorter is better. OCR time is the recorded cost of OCR on the pages read plus the text model's time." />
       </section>
 
+      {dx && <DiagnosisSection d={dx} />}
       {m.trust && <TrustSection t={m.trust} />}
-      {m.by_type && Object.keys(m.by_type).length > 1 && <TypeSection b={m.by_type} />}
+      {m.by_type && Object.keys(m.by_type).length > 1 && <TypeSection b={m.by_type} d={dx?.by_type} />}
 
       <section aria-label="What the results mean" className="card flex flex-col gap-3.5 px-6 py-5">
-        <h2 className="text-lg font-semibold">What the results mean</h2>
+        <h2 className="text-lg font-semibold">{dx ? "Speed, reliability and how sure we can be" : "What the results mean"}</h2>
         <dl className="grid gap-x-6 gap-y-3.5 sm:grid-cols-[200px_minmax(0,1fr)]">
           {interpret({ ...m, n: m.n, vlm: m.vlm, ocr: m.ocr }, winner).map(([k, t]) => (
             <div key={k} className="contents"><dt className="font-semibold">{k}</dt><dd className="text-ink-soft">{t}</dd></div>
@@ -153,7 +159,7 @@ function TrustSection({ t }: { t: NonNullable<Metrics["trust"]> }) {
 }
 
 /** Vision vs OCR accuracy per question type. */
-function TypeSection({ b }: { b: NonNullable<Metrics["by_type"]> }) {
+function TypeSection({ b, d }: { b: NonNullable<Metrics["by_type"]>; d?: Record<string, GroupStats> }) {
   const rows = Object.entries(b);
   const gaps = rows.map(([k, r]) => [k, r.vlm_anls - r.ocr_anls, r.n] as const).filter(([, , n]) => n >= 5).sort((x, y) => y[1] - x[1]);
   const best = gaps[0], worst = gaps[gaps.length - 1];
@@ -168,6 +174,59 @@ function TypeSection({ b }: { b: NonNullable<Metrics["by_type"]> }) {
         caption="Types with fewer than about 10 questions are noisy; read them as hints, not results." />
       {best && worst && best[0] !== worst[0] && (
         <p className="text-ink-soft">The vision model's biggest lead is on <strong>{best[0]}</strong> ({best[1] >= 0 ? "+" : ""}{(best[1] * 100).toFixed(0)} points); {worst[1] < 0 ? <>OCR leads on <strong>{worst[0]}</strong> ({(worst[1] * 100).toFixed(0)} points)</> : <>its smallest lead is on <strong>{worst[0]}</strong> ({(worst[1] * 100).toFixed(0)} points)</>}. Only types with at least 5 questions are compared.</p>
+      )}
+      {d && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[40rem] text-sm">
+            <thead className="text-left text-[13px] text-muted"><tr><th className="py-1 font-medium">Kind of question</th><th className="font-medium">Questions</th><th className="font-medium text-vlm">Vision right</th><th className="font-medium text-ocr-text">OCR right</th><th className="font-medium">Better</th><th className="font-medium">OCR's main failure</th><th className="font-medium">Vision's main failure</th></tr></thead>
+            <tbody>{Object.entries(d).map(([k, r]) => (
+              <tr key={k} className="border-t border-hair"><td className="py-1.5 pr-3">{k}</td><td>{r.n}</td><td>{pct(r.vlm_right, 0)}</td><td>{pct(r.ocr_right, 0)}</td>
+                <td className={r.better === "vlm" ? "text-vlm" : r.better === "ocr" ? "text-ocr-text" : "text-muted"}>{r.better === "vlm" ? "Vision" : r.better === "ocr" ? "OCR" : "Same"}</td>
+                <td>{r.ocr_main_cause ? CAUSE[r.ocr_main_cause] ?? r.ocr_main_cause : "-"}</td><td>{r.vlm_main_cause ? CAUSE[r.vlm_main_cause] ?? r.vlm_main_cause : "-"}</td></tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+const ORDER = ["read clearly by OCR", "read with low confidence by OCR", "read with errors by OCR", "not read by OCR"];
+
+/** Why one method beat the other: the causes behind each wrong answer, and how the result depends on the part of the page. */
+function DiagnosisSection({ d }: { d: RunDiagnosis }) {
+  const wrong = Array.from(new Set([...Object.keys(d.causes.vlm), ...Object.keys(d.causes.ocr)]))
+    .filter((c) => !["correct", "repaired", "beyond_ocr"].includes(c))
+    .sort((a, b) => ((d.causes.ocr[b] ?? 0) + (d.causes.vlm[b] ?? 0)) - ((d.causes.ocr[a] ?? 0) + (d.causes.vlm[a] ?? 0)));
+  const count = (x: number) => `${x}`;
+  const regions = ORDER.filter((k) => d.by_region[k]).map((k) => [k, d.by_region[k]] as const);
+  const layouts = Object.entries(d.by_layout);
+  return (
+    <section aria-label="Why one method did better" className="card flex flex-col gap-5 px-6 py-5">
+      <div>
+        <h2 className="text-lg font-semibold">Why one method did better</h2>
+        <p className="text-ink-soft">Every wrong answer is given a cause from its answers, the correct answers and OCR's text and boxes. The explanation below is built from those causes, not from the scores alone.</p>
+      </div>
+      <dl className="grid gap-x-6 gap-y-3.5 sm:grid-cols-[220px_minmax(0,1fr)]">
+        {d.explanation.map((e) => (
+          <div key={e.title} className="contents"><dt className="font-semibold">{e.title}</dt><dd className="text-ink-soft">{e.text}</dd></div>
+        ))}
+      </dl>
+      <div className="grid gap-10 lg:grid-cols-2">
+        <BarChart title="Why answers were wrong" tickFmt={count} legend={LEGEND}
+          groups={wrong.map((c) => ({ name: CAUSE[c] ?? c, bars: [
+            { who: "Vision", segments: [{ value: d.causes.vlm[c] ?? 0, color: COLORS.vlm, name: "Vision" }], label: count(d.causes.vlm[c] ?? 0), tip: `Vision model: ${d.causes.vlm[c] ?? 0} wrong answers, ${(CAUSE[c] ?? c).toLowerCase()}` },
+            { who: "OCR", segments: [{ value: d.causes.ocr[c] ?? 0, color: COLORS.ocr, name: "OCR" }], label: count(d.causes.ocr[c] ?? 0), tip: `OCR pipeline: ${d.causes.ocr[c] ?? 0} wrong answers, ${(CAUSE[c] ?? c).toLowerCase()}` },
+          ] }))}
+          caption="Number of wrong answers by cause. OCR-side causes such as “never reached the OCR text” and “words run together” cannot happen to the vision model, which reads the image itself." />
+        <BarChart title="Right answers, by how OCR read the answer's place" max={1} tickFmt={(x) => `${Math.round(x * 100)}%`} legend={LEGEND}
+          groups={regions.map(([k, r]) => pair(`${k[0].toUpperCase()}${k.slice(1)} (${r.n})`, r.vlm_right, r.ocr_right, (x) => pct(x, 0)))}
+          caption="Where OCR could not read the answer, the OCR pipeline almost never gets it; the vision model is unaffected. The gap on clearly read answers comes from the text model choosing values without the layout." />
+      </div>
+      {layouts.length > 1 && (
+        <BarChart title="Right answers, by the layout around the answer" max={1} tickFmt={(x) => `${Math.round(x * 100)}%`} legend={LEGEND}
+          groups={layouts.map(([k, r]) => pair(`${k[0].toUpperCase()}${k.slice(1)} (${r.n})`, r.vlm_right, r.ocr_right, (x) => pct(x, 0)))}
+          caption="Layout comes from OCR's boxes: a table row has several cells on its line and on the lines around it; a label and value share a line." />
       )}
     </section>
   );

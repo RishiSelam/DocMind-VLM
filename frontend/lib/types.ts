@@ -7,6 +7,7 @@ export type Pipeline = {
   answer: string | null; pages: number[]; ms: number; error: string | null;
   ocr_ms?: number; llm_ms?: number; engine?: string; context_chars?: number; truncated?: boolean;
   batches?: { pages: number[]; answer: string | null; ms: number }[]; combined?: boolean; // the parts a long document was read in
+  ocr_text?: string | null;
 };
 export type PairLabel = "agree" | "partial" | "conflict" | "only_vlm" | "only_ocr";
 export type Pair = { vlm: string | null; ocr: string | null; label: PairLabel; score: number };
@@ -31,6 +32,28 @@ export type AskPayload = {
   timings: Record<string, number>; scorecard?: Scorecard | null; explanation?: Finding[];
   reused_from?: { message_id: string; conversation_id: string; asked_at: number }; // a saved answer shown again
   xai?: Xai;
+  analysis?: Analysis | null;
+  combined_summary?: CombinedSummary | null;
+};
+export type CombinedSummary = {
+  summary: string;
+  consensus?: string[];
+  vlm_unique?: string[];
+  ocr_unique?: string[];
+  discrepancies?: string[];
+};
+// Which method did better on one question, why, and which part of the page each read right (boxes as fractions of the page)
+export type Who = "vlm" | "ocr" | "both";
+export type Cause = { who: Who; cause: string; label: string; text: string };
+export type WordRead = { status: "right" | "misread" | "absent"; as: string | null };
+export type Region = {
+  page: number; box: [number, number, number, number]; kind: "table" | "image" | "form" | "text"; ocr_line: string; conf: number;
+  words: { word: string; in_page: boolean | null; vision: WordRead; ocr_text: WordRead; ocr_answer: WordRead }[];
+  better: "vlm" | "ocr" | "both" | "neither" | null;
+};
+export type Analysis = {
+  better: "vlm" | "ocr" | "same" | "undecided"; basis: "textlayer" | "closer_look" | null; headline: string; summary: string; reason: string | null;
+  why: Cause[]; regions: Region[];
 };
 // Explainability: boxes are { page: 0-based, box: [x0, y0, x1, y1] as fractions of the page }
 export type EvBox = { page: number; box: [number, number, number, number]; text?: string; score?: number };
@@ -52,9 +75,22 @@ export type Scorecard = {
 export type Message = { id: string; conversation_id: string; role: "user" | "assistant"; content: string; payload: Partial<AskPayload> & { doc_id?: string }; created_at: number };
 
 export type Scores = { em?: number; anls?: number; contains?: number; abstain?: number; error?: number };
+export type SideDiagnosis = { cause: string; text: string };
+export type ItemDiagnosis = {
+  better: "vlm" | "ocr" | "both" | "neither"; bucket: string; vlm?: SideDiagnosis; ocr?: SideDiagnosis;
+  region: { conf: number; layout: "table" | "form" | "text"; small: boolean; box: number[]; text: string } | null;
+};
 export type ExpItem = {
   idx: number; qid: string; question: string; gold: string[]; vlm_pred: string | null; ocr_pred: string | null;
   vlm_scores: Scores; ocr_scores: Scores; vlm_ms: number | null; ocr_ms: number | null; answer_in_ocr: number | null; agree: number | null;
+  extra?: { types?: string[]; diagnosis?: ItemDiagnosis; [k: string]: any };
+};
+export type GroupStats = { n: number; vlm_right: number; ocr_right: number; better: "vlm" | "ocr" | "same"; ocr_main_cause: string | null; vlm_main_cause: string | null };
+export type RunDiagnosis = {
+  n: number; outcomes: Partial<Record<"vlm" | "ocr" | "both" | "neither", number>>;
+  causes: Record<"vlm" | "ocr", Record<string, number>>; lost_to: Record<"vlm" | "ocr", Record<string, number>>;
+  by_type: Record<string, GroupStats>; by_region: Record<string, GroupStats>; by_layout: Record<string, GroupStats>;
+  explanation: { title: string; text: string }[];
 };
 export type Side = { em: number; anls: number; contains: number; abstain_rate: number; error_rate: number; latency_ms: { mean: number; p50: number; p95: number } };
 export type Metrics = {
@@ -64,6 +100,7 @@ export type Metrics = {
   trust?: { n: number; unrated: number; accuracy: number; auroc_trust: number | null; auroc_agreement: number | null;
     risk_coverage: { coverage: number; n: number; accuracy: number }[] } | null;
   by_type?: Record<string, { n: number; vlm_anls: number; ocr_anls: number }> | null;
+  diagnosis?: RunDiagnosis | null;
 };
 export type Experiment = {
   id: string; name: string; status: "queued" | "running" | "finished" | "failed"; config: Record<string, any>; metrics: Metrics;

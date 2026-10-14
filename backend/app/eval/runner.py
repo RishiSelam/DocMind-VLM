@@ -1,6 +1,7 @@
 """Experiment runner: both pipelines over a dataset, per-item checkpointing, resumable."""
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -8,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from .. import db
 from ..config import get_settings
-from ..services import ocr as ocrsvc
+from ..services import diagnosis, ocr as ocrsvc
 from ..services.models import hub
 from ..services.pipelines import run_ask
 from ..services.prompts import PROMPT_VERSION
@@ -79,12 +80,49 @@ def run_experiment(exp_id: str, resume: bool = True) -> None:
                     "agree": (verify(vp, op)["verdict"] == "consistent") if (vp is not None and op is not None) else None,
                     "extra": _trust_record(res, gold),
                 }
+                record["extra"]["diagnosis"] = diagnosis.diagnose_item(record, _cached_ocr_page(it))
                 db.add_experiment_item(exp_id, idx, record)  # written immediately: a crash loses at most one item
                 db.update_experiment(exp_id, progress_done=len(db.list_experiment_items(exp_id)))
             finalize(exp_id, "finished")
         except Exception as e:  # noqa: BLE001
             log.exception("experiment %s failed", exp_id)
             finalize(exp_id, "failed", error=f"{type(e).__name__}: {e}")
+
+
+def _cached_ocr_page(ds_item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """OCR of the question's page from the cache only (None if OCR never ran on it, e.g. a vision-only run)."""
+    pages = db.get_ocr_pages(item_as_document(ds_item)["id"], ocrsvc.cache_key())
+    return pages.get(ds_item.get("page", 0)) or (pages[min(pages)] if pages else None)
+
+
+def with_diagnosis(exp: Dict[str, Any], items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Give every item a diagnosis (who did better, why, where). Items from runs made before diagnoses existed get one
+    computed from their stored answers and the cached OCR; nothing is re-run and nothing is written."""
+    need = [i for i in items if not (i.get("extra") or {}).get("diagnosis")]
+    if not need:
+        return items
+    try:
+        ds = load_dataset(exp["config"]["dataset"], exp["config"].get("limit"))
+    except Exception as e:  # noqa: BLE001 - dataset moved or deleted: diagnose without OCR boxes
+        log.warning("cannot reload dataset for %s: %s", exp.get("id"), e)
+        ds = []
+    for it in need:
+        src = ds[it["idx"]] if it["idx"] < len(ds) and ds[it["idx"]]["qid"] == it["qid"] else None
+        it["extra"] = {**(it.get("extra") or {}), "diagnosis": diagnosis.diagnose_item(it, _cached_ocr_page(src) if src else None)}
+    return items
+
+
+CSV_HEADER = ["qid", "question", "gold", "vlm_pred", "ocr_pred", "vlm_em", "vlm_anls", "ocr_em", "ocr_anls", "vlm_ms", "ocr_ms",
+              "answer_in_ocr", "pipelines_agree", "better", "vlm_cause", "ocr_cause", "answer_region", "why_vlm", "why_ocr"]
+
+
+def csv_row(it: Dict[str, Any]) -> List[Any]:
+    d = (it.get("extra") or {}).get("diagnosis") or {}
+    return [it["qid"], it["question"], json.dumps(it["gold"]), it["vlm_pred"], it["ocr_pred"],
+            it["vlm_scores"].get("em"), it["vlm_scores"].get("anls"), it["ocr_scores"].get("em"),
+            it["ocr_scores"].get("anls"), it["vlm_ms"], it["ocr_ms"], it["answer_in_ocr"], it["agree"],
+            d.get("better"), (d.get("vlm") or {}).get("cause"), (d.get("ocr") or {}).get("cause"), d.get("bucket"),
+            (d.get("vlm") or {}).get("text"), (d.get("ocr") or {}).get("text")]
 
 
 def finalize(exp_id: str, status: str, error: Optional[str] = None) -> None:
